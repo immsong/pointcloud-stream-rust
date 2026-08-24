@@ -1,3 +1,5 @@
+use crate::pointcloud::PointCloudError;
+
 use super::field::PointField;
 
 /// Point Cloud binary 데이터의 byte order를 나타낸다.
@@ -56,4 +58,32 @@ pub struct PointCloudFrame {
 
     /// Field layout에 따라 저장된 Point Cloud binary 데이터.
     pub data: Vec<u8>,
+}
+
+impl PointCloudFrame {
+    pub fn validate(&self) -> Result<(), PointCloudError> {
+        if self.row_step < self.width * self.point_step {
+            return Err(PointCloudError::InvalidRowStep);
+        }
+
+        if self.data.len() != (self.row_step * self.height) as usize {
+            return Err(PointCloudError::InvalidDataLength);
+        }
+
+        for field in &self.fields {
+            if field.count == 0 {
+                return Err(PointCloudError::InvalidFieldCount {
+                    field_name: field.name.clone(),
+                });
+            }
+
+            if field.offset + field.count * field.data_type.size_bytes() as u32 > self.point_step {
+                return Err(PointCloudError::InvalidFieldLayout {
+                    field_name: field.name.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
