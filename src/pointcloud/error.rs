@@ -5,8 +5,19 @@ use std::fmt;
 pub enum PointCloudError {
     InvalidRowStep,
     InvalidDataLength,
-    InvalidFieldLayout { field_name: String },
-    InvalidFieldCount { field_name: String },
+    InvalidFieldLayout {
+        field_name: String,
+    },
+    InvalidFieldCount {
+        field_name: String,
+    },
+    DuplicateFieldName {
+        field_name: String,
+    },
+    OverlappingFields {
+        first_field: String,
+        second_field: String,
+    },
 }
 
 impl fmt::Display for PointCloudError {
@@ -23,6 +34,16 @@ impl fmt::Display for PointCloudError {
             }
             Self::InvalidFieldCount { field_name } => {
                 write!(f, "field '{field_name}' has an invalid count")?;
+            }
+            Self::DuplicateFieldName { field_name } => {
+                write!(f, "field '{field_name}' is duplicated")?;
+            }
+
+            Self::OverlappingFields {
+                first_field,
+                second_field,
+            } => {
+                write!(f, "fields '{first_field}' and '{second_field}' overlap")?;
             }
         }
         Ok(())

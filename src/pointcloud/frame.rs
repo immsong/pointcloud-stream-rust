@@ -84,6 +84,30 @@ impl PointCloudFrame {
             }
         }
 
+        for (index, field) in self.fields.iter().enumerate() {
+            // 자기 자신과 이전 field는 제외하고, 뒤에 있는 field들과만 비교한다.
+            for other in self.fields.iter().skip(index + 1) {
+                if field.name == other.name {
+                    return Err(PointCloudError::DuplicateFieldName {
+                        field_name: field.name.clone(),
+                    });
+                }
+
+                let field_end = field.offset + field.count * field.data_type.size_bytes() as u32;
+
+                let other_end = other.offset + other.count * other.data_type.size_bytes() as u32;
+
+                let overlaps = field.offset < other_end && other.offset < field_end;
+
+                if overlaps {
+                    return Err(PointCloudError::OverlappingFields {
+                        first_field: field.name.clone(),
+                        second_field: other.name.clone(),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 }
