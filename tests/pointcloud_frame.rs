@@ -3,7 +3,7 @@ use pointcloud_stream::pointcloud::{
 };
 
 #[test]
-fn valid_frame_passes_validation() {
+fn frame_valid_data_passes_validation() {
     let frame = PointCloudFrame {
         timestamp_ns: 0,
         frame_id: "lidar".to_string(),
@@ -40,7 +40,7 @@ fn valid_frame_passes_validation() {
 }
 
 #[test]
-fn valid_frame_fails_validation() {
+fn frame_invalid_data_length_fails_validation() {
     let frame = PointCloudFrame {
         timestamp_ns: 0,
         frame_id: "lidar".to_string(),
