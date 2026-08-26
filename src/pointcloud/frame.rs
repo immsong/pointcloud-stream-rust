@@ -1,6 +1,4 @@
-use crate::pointcloud::PointCloudError;
-
-use super::field::PointField;
+use crate::pointcloud::{PointCloudError, PointField, PointFieldDataType};
 
 /// Point Cloud binary 데이터의 byte order를 나타낸다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +60,10 @@ pub struct PointCloudFrame {
 
 impl PointCloudFrame {
     pub fn validate(&self) -> Result<(), PointCloudError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(PointCloudError::InvalidDimensions);
+        }
+
         if self.row_step < self.width * self.point_step {
             return Err(PointCloudError::InvalidRowStep);
         }
@@ -70,6 +72,7 @@ impl PointCloudFrame {
             return Err(PointCloudError::InvalidDataLength);
         }
 
+        let mut coordinate_fields_found = [false; 3]; // x, y, z
         for field in &self.fields {
             if field.count == 0 {
                 return Err(PointCloudError::InvalidFieldCount {
@@ -82,6 +85,55 @@ impl PointCloudFrame {
                     field_name: field.name.clone(),
                 });
             }
+
+            if field.name.eq_ignore_ascii_case("x")
+                || field.name.eq_ignore_ascii_case("y")
+                || field.name.eq_ignore_ascii_case("z")
+            {
+                if field.data_type != PointFieldDataType::Float32 {
+                    return Err(PointCloudError::InvalidCoordinateFieldType {
+                        field_name: field.name.clone(),
+                    });
+                }
+
+                // x, y, z 좌표 필드는 반드시 count가 1이어야 한다.
+                if field.count != 1 {
+                    return Err(PointCloudError::InvalidFieldCount {
+                        field_name: field.name.clone(),
+                    });
+                }
+
+                let index = match field.name.as_str() {
+                    "x" | "X" => 0,
+                    "y" | "Y" => 1,
+                    "z" | "Z" => 2,
+                    _ => unreachable!(),
+                };
+
+                // x, X 등 대소문자 구분된 동일한 field 이름의 중복을 체크한다.
+                if coordinate_fields_found[index] {
+                    return Err(PointCloudError::DuplicateFieldName {
+                        field_name: field.name.clone(),
+                    });
+                }
+
+                coordinate_fields_found[index] = true;
+            }
+        }
+
+        let index = coordinate_fields_found.iter().position(|f| *f == false);
+        match index {
+            Some(index) => {
+                return Err(PointCloudError::MissingCoordinateField {
+                    field_name: match index {
+                        0 => "x".to_string(),
+                        1 => "y".to_string(),
+                        2 => "z".to_string(),
+                        _ => unreachable!(),
+                    },
+                });
+            }
+            None => {}
         }
 
         for (index, field) in self.fields.iter().enumerate() {
