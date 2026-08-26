@@ -1,3 +1,5 @@
+use crate::pointcloud::{Endianness, PointCloudError, PointCloudFrame};
+
 /// 3D 좌표 이동값.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Translation {
@@ -80,5 +82,103 @@ impl Transform {
             + self.translation.z;
 
         (transformed_x, transformed_y, transformed_z)
+    }
+
+    pub fn transform_frame(&self, frame: &mut PointCloudFrame) -> Result<(), PointCloudError> {
+        frame.validate()?;
+
+        let x_offset = frame
+            .fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case("x"))
+            .unwrap()
+            .offset as usize;
+        let y_offset = frame
+            .fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case("y"))
+            .unwrap()
+            .offset as usize;
+        let z_offset = frame
+            .fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case("z"))
+            .unwrap()
+            .offset as usize;
+
+        for row in 0..frame.height as usize {
+            for column in 0..frame.width as usize {
+                let offset = (row * frame.row_step as usize) + (column * frame.point_step as usize);
+
+                let x = Self::read_f32(&frame.data, offset + x_offset, frame.endianness);
+                let y = Self::read_f32(&frame.data, offset + y_offset, frame.endianness);
+                let z = Self::read_f32(&frame.data, offset + z_offset, frame.endianness);
+
+                let (transformed_x, transformed_y, transformed_z) = self.transform_point(x, y, z);
+
+                Self::write_f32(
+                    &mut frame.data,
+                    offset + x_offset,
+                    transformed_x,
+                    frame.endianness,
+                );
+                Self::write_f32(
+                    &mut frame.data,
+                    offset + y_offset,
+                    transformed_y,
+                    frame.endianness,
+                );
+                Self::write_f32(
+                    &mut frame.data,
+                    offset + z_offset,
+                    transformed_z,
+                    frame.endianness,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn read_f32(data: &[u8], offset: usize, endianness: Endianness) -> f32 {
+        let bytes: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
+        match endianness {
+            Endianness::Little => f32::from_le_bytes(bytes),
+            Endianness::Big => f32::from_be_bytes(bytes),
+        }
+    }
+
+    fn write_f32(data: &mut [u8], offset: usize, value: f32, endianness: Endianness) {
+        let bytes = match endianness {
+            Endianness::Little => value.to_le_bytes(),
+            Endianness::Big => value.to_be_bytes(),
+        };
+        data[offset..offset + 4].copy_from_slice(&bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transform_f32_read_write_preserves_value() {
+        const EPSILON: f32 = 0.0001;
+
+        let mut little_data = vec![0u8; 4];
+
+        Transform::write_f32(&mut little_data, 0, 1.25, Endianness::Little);
+
+        let little_value = Transform::read_f32(&little_data, 0, Endianness::Little);
+
+        assert!((little_value - 1.25).abs() < EPSILON);
+
+        let mut big_data = vec![0u8; 4];
+
+        Transform::write_f32(&mut big_data, 0, 2.5, Endianness::Big);
+
+        let big_value = Transform::read_f32(&big_data, 0, Endianness::Big);
+
+        assert!((big_value - 2.5).abs() < EPSILON);
     }
 }

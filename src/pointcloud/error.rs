@@ -18,6 +18,13 @@ pub enum PointCloudError {
         first_field: String,
         second_field: String,
     },
+    MissingCoordinateField {
+        field_name: String,
+    },
+    InvalidCoordinateFieldType {
+        field_name: String,
+    },
+    InvalidDimensions,
 }
 
 impl fmt::Display for PointCloudError {
@@ -38,12 +45,20 @@ impl fmt::Display for PointCloudError {
             Self::DuplicateFieldName { field_name } => {
                 write!(f, "field '{field_name}' is duplicated")?;
             }
-
             Self::OverlappingFields {
                 first_field,
                 second_field,
             } => {
                 write!(f, "fields '{first_field}' and '{second_field}' overlap")?;
+            }
+            Self::MissingCoordinateField { field_name } => {
+                write!(f, "coordinate field '{field_name}' was not found")?;
+            }
+            Self::InvalidCoordinateFieldType { field_name } => {
+                write!(f, "coordinate field '{field_name}' must be Float32")?;
+            }
+            Self::InvalidDimensions => {
+                write!(f, "width and height must be greater than 0")?;
             }
         }
         Ok(())
