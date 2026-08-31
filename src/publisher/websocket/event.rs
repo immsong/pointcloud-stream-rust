@@ -2,6 +2,7 @@
 pub enum WebsocketEvent {
     Connected {
         addr: std::net::SocketAddr,
+        subprotocol: Option<&'static str>,
     },
     Disconnected {
         addr: std::net::SocketAddr,
