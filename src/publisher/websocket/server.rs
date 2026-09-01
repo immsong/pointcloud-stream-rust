@@ -4,10 +4,11 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 
 use crate::publisher::foxgloves::{
-    Advertise, Channel, FOXGLOVE_OP_SUBSCRIBE, FOXGLOVE_OP_UNSUBSCRIBE, FOXGLOVE_SUBPROTOCOL,
+    Advertise, FOXGLOVE_OP_SUBSCRIBE, FOXGLOVE_OP_UNSUBSCRIBE, FOXGLOVE_SUBPROTOCOL,
     FoxgloveOperation, ServerInfo, Subscribe, Unsubscribe,
 };
 use crate::publisher::websocket::WebsocketEvent;
+use crate::publisher::{ChannelId, ChannelRegistry};
 
 const SUPPORTED_SUBPROTOCOLS: &[&str] = &[FOXGLOVE_SUBPROTOCOL];
 
@@ -15,13 +16,14 @@ const SUPPORTED_SUBPROTOCOLS: &[&str] = &[FOXGLOVE_SUBPROTOCOL];
 struct ClientState {
     tx: tokio::sync::mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
     subprotocol: Option<&'static str>,
-    subscriptions: HashMap<u32, u32>,
+    subscriptions: HashMap<u32, ChannelId>,
 }
 
 #[derive(Clone)]
 pub struct WebsocketServer {
     address: String,
     clients: Arc<tokio::sync::Mutex<HashMap<std::net::SocketAddr, ClientState>>>,
+    channels: ChannelRegistry,
 }
 
 impl WebsocketServer {
@@ -29,7 +31,12 @@ impl WebsocketServer {
         Self {
             address: address.into(),
             clients: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            channels: ChannelRegistry::new(),
         }
+    }
+
+    pub fn register_channel(&mut self, topic: impl Into<String>) -> ChannelId {
+        self.channels.register(topic)
     }
 
     pub async fn run(
@@ -49,8 +56,10 @@ impl WebsocketServer {
 
             let clients = self.clients.clone();
             let event_tx = event_tx.clone();
+            let channels = self.channels.clone();
+
             tokio::spawn(async move {
-                Self::handle_connection(stream, addr, clients, event_tx).await;
+                Self::handle_connection(stream, addr, clients, event_tx, channels).await;
             });
         }
     }
@@ -61,6 +70,7 @@ impl WebsocketServer {
         addr: std::net::SocketAddr,
         clients: Arc<tokio::sync::Mutex<HashMap<std::net::SocketAddr, ClientState>>>,
         event_tx: tokio::sync::mpsc::Sender<WebsocketEvent>,
+        channels: ChannelRegistry,
     ) {
         //  websocket handshake
         let mut client_subprotocol = None;
@@ -129,14 +139,7 @@ impl WebsocketServer {
                 return;
             }
 
-            let advertise = Advertise::new(vec![Channel {
-                id: 1,
-                topic: "/pointcloud".to_string(),
-                encoding: "json".to_string(),
-                schema_name: "foxglove.PointCloud".to_string(),
-                schema: "".to_string(),
-            }]);
-
+            let advertise = Advertise::from_channels(channels.channels());
             let json = match serde_json::to_string(&advertise) {
                 Ok(json) => json,
                 Err(_) => {
@@ -181,10 +184,13 @@ impl WebsocketServer {
                                             let client_state = clients.get_mut(&addr);
                                             if let Some(client_state) = client_state {
                                                 for subscription in subscribe.subscriptions {
-                                                    client_state.subscriptions.insert(
-                                                        subscription.id,
-                                                        subscription.channel_id,
-                                                    );
+                                                    if let Some(channel) = channels
+                                                        .get_by_raw_id(subscription.channel_id)
+                                                    {
+                                                        client_state
+                                                            .subscriptions
+                                                            .insert(subscription.id, channel.id);
+                                                    }
                                                 }
                                             }
                                         }
@@ -300,6 +306,7 @@ impl Default for WebsocketServer {
         Self {
             address: "127.0.0.1:18899".to_string(),
             clients: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            channels: ChannelRegistry::new(),
         }
     }
 }
@@ -384,13 +391,17 @@ async fn websocket_server_accepts_websocket_connection_and_receives_messages() {
 
 #[tokio::test]
 async fn websocket_server_accepts_supported_subprotocol() {
+    use crate::publisher::foxgloves::AdvertisedChannel;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     // server
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
 
-    let server = WebsocketServer::new("127.0.0.1:0");
+    let mut server = WebsocketServer::new("127.0.0.1:0");
+
+    let pointcloud_channel = server.register_channel("/pointcloud");
+
     let running_server = server.clone();
 
     let server_task = tokio::spawn(async move {
@@ -454,15 +465,14 @@ async fn websocket_server_accepts_supported_subprotocol() {
         tokio_tungstenite::tungstenite::Message::Text(text) => {
             let received: serde_json::Value = serde_json::from_str(&text).unwrap();
 
-            let expected = serde_json::to_value(Advertise::new(vec![Channel {
-                id: 1,
+            let expected = serde_json::to_value(Advertise::new(vec![AdvertisedChannel {
+                id: pointcloud_channel.as_u32(),
                 topic: "/pointcloud".to_string(),
                 encoding: "json".to_string(),
                 schema_name: "foxglove.PointCloud".to_string(),
                 schema: "".to_string(),
             }]))
             .unwrap();
-
             assert_eq!(received, expected);
         }
         _ => panic!("Unexpected message type"),

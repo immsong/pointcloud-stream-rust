@@ -18,9 +18,9 @@ impl ServerInfo {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Channel {
+pub struct AdvertisedChannel {
     pub id: u32,
     pub topic: String,
     pub encoding: String,
@@ -28,14 +28,35 @@ pub struct Channel {
     pub schema: String,
 }
 
+impl From<&crate::publisher::Channel> for AdvertisedChannel {
+    fn from(channel: &crate::publisher::Channel) -> Self {
+        Self {
+            id: channel.id.as_u32(),
+            topic: channel.topic.clone(),
+            encoding: "json".to_string(),
+            schema_name: "foxglove.PointCloud".to_string(),
+            schema: "".to_string(),
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct Advertise {
     op: &'static str,
-    channels: Vec<Channel>,
+    channels: Vec<AdvertisedChannel>,
 }
 
 impl Advertise {
-    pub fn new(channels: Vec<Channel>) -> Self {
+    pub fn new(channels: Vec<AdvertisedChannel>) -> Self {
+        Self {
+            op: "advertise",
+            channels,
+        }
+    }
+
+    pub fn from_channels(channels: &[crate::publisher::Channel]) -> Self {
+        let channels = channels.iter().map(AdvertisedChannel::from).collect();
+
         Self {
             op: "advertise",
             channels,
@@ -81,7 +102,7 @@ fn server_info_serializes_required_fields() {
 
 #[test]
 fn advertise_serializes_required_fields() {
-    let channel = Channel {
+    let channel = AdvertisedChannel {
         id: 1,
         topic: "/pointcloud".to_string(),
         encoding: "json".to_string(),
