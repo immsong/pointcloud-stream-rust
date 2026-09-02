@@ -1,5 +1,3 @@
-use base64::Engine;
-
 use crate::pointcloud::{PointCloudFrame, PointFieldDataType};
 
 const FOXGLOVE_BINARY_OP_MESSAGE_DATA: u8 = 0x01;
@@ -47,7 +45,7 @@ struct FoxglovePointCloud {
     pose: FoxglovePose,
     point_stride: u32,
     fields: Vec<FoxgloveField>,
-    data: String,
+    data: Vec<u8>,
 }
 
 fn foxglove_numeric_type(data_type: PointFieldDataType) -> u8 {
@@ -147,7 +145,7 @@ pub fn encode_pointcloud_payload(frame: &PointCloudFrame) -> Result<Vec<u8>, ser
         },
         point_stride: frame.point_step,
         fields,
-        data: base64::engine::general_purpose::STANDARD.encode(&data),
+        data,
     };
 
     serde_json::to_vec(&foxgloves_pointcloud)
@@ -247,9 +245,14 @@ fn pointcloud_payload_encodes_required_fields() {
     assert_eq!(json["fields"][2]["offset"], 8);
     assert_eq!(json["fields"][2]["type"], 7);
 
-    let expected_data = base64::engine::general_purpose::STANDARD.encode(&data);
-
-    assert_eq!(json["data"], expected_data);
+    let expected_data = data.clone();
+    let actual_data: Vec<u8> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
+        .collect();
+    assert_eq!(expected_data, actual_data);
 }
 
 #[test]
@@ -331,13 +334,14 @@ fn pointcloud_payload_removes_row_padding() {
     let payload = encode_pointcloud_payload(&frame).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
 
-    let encoded_data = json["data"].as_str().unwrap();
+    let data: Vec<u8> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
+        .collect();
 
-    let decoded_data = base64::engine::general_purpose::STANDARD
-        .decode(encoded_data)
-        .unwrap();
-
-    assert_eq!(decoded_data.len(), 24);
+    assert_eq!(data.len(), 24);
 }
 
 #[test]

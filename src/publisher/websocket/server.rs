@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 
+use crate::pointcloud::PointCloudFrame;
 use crate::publisher::foxgloves::{
     Advertise, FOXGLOVE_OP_SUBSCRIBE, FOXGLOVE_OP_UNSUBSCRIBE, FOXGLOVE_SUBPROTOCOL,
-    FoxgloveOperation, ServerInfo, Subscribe, Unsubscribe,
+    FoxgloveOperation, ServerInfo, Subscribe, Unsubscribe, encode_message_data,
+    encode_pointcloud_payload,
 };
 use crate::publisher::websocket::WebsocketEvent;
 use crate::publisher::{ChannelId, ChannelRegistry};
@@ -298,6 +300,64 @@ impl WebsocketServer {
         }
 
         None
+    }
+
+    pub async fn publish_pointcloud(
+        &self,
+        channel_id: ChannelId,
+        frame: &PointCloudFrame,
+    ) -> Result<(), serde_json::Error> {
+        if self.channels.get(channel_id).is_none() {
+            return Ok(());
+        }
+
+        let targets = {
+            let clients = self.clients.lock().await;
+            let mut targets = vec![];
+
+            for client in clients.values() {
+                match client.subprotocol {
+                    Some(FOXGLOVE_SUBPROTOCOL) => {
+                        // subscription_id
+                        // : Foxglove client가 부여한 subscription ID.
+                        //
+                        // subscribed_channel_id
+                        //: 해당 subscription이 구독 중인 공통 ChannelId.
+                        //
+                        // channel_id
+                        // : publish_pointcloud()로 전달된, 지금 전송하려는 PointCloudFrame의 ChannelId.
+                        //
+                        // 현재 publish하려는 channel을 구독 중인 subscription만 전송 대상으로 추가한다.
+                        for (subscription_id, subscribed_channel_id) in &client.subscriptions {
+                            if *subscribed_channel_id == channel_id {
+                                targets.push((client.tx.clone(), *subscription_id));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            targets
+        };
+
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        let payload = encode_pointcloud_payload(frame)?;
+
+        for (tx, subscription_id) in targets {
+            let message = encode_message_data(subscription_id, frame.timestamp_ns, &payload);
+
+            let _ = tx
+                .send(tokio_tungstenite::tungstenite::Message::Binary(
+                    message.into(),
+                ))
+                .await;
+        }
+
+        Ok(())
     }
 }
 

@@ -35,6 +35,10 @@ impl ChannelRegistry {
         id
     }
 
+    pub fn get(&self, id: ChannelId) -> Option<&Channel> {
+        self.channels.iter().find(|ch| ch.id == id)
+    }
+
     pub fn channels(&self) -> &[Channel] {
         &self.channels
     }
