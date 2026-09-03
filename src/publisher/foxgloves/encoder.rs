@@ -39,13 +39,13 @@ struct FoxgloveField {
 }
 
 #[derive(serde::Serialize)]
-struct FoxglovePointCloud {
+struct FoxglovePointCloud<'a> {
     timestamp: FoxgloveTimestamp,
     frame_id: String,
     pose: FoxglovePose,
     point_stride: u32,
     fields: Vec<FoxgloveField>,
-    data: Vec<u8>,
+    data: &'a [u8],
 }
 
 fn foxglove_numeric_type(data_type: PointFieldDataType) -> u8 {
@@ -61,51 +61,18 @@ fn foxglove_numeric_type(data_type: PointFieldDataType) -> u8 {
     }
 }
 
-fn convert_point_data_to_little_endian(data: &mut [u8], frame: &PointCloudFrame) {
-    let point_count = frame.width as usize * frame.height as usize;
-
-    let point_step = frame.point_step as usize;
-
-    for point_index in 0..point_count {
-        let point_start = point_index * point_step;
-
-        for field in &frame.fields {
-            let value_size = field.data_type.size_bytes();
-
-            if value_size == 1 {
-                // 데이터 1은 endian 영향을 받지 않음
-                continue;
-            }
-
-            for value_index in 0..field.count as usize {
-                let value_start = point_start + field.offset as usize + value_index * value_size;
-                let value_end = value_start + value_size;
-
-                data[value_start..value_end].reverse();
-            }
-        }
-    }
+pub fn encode_foxglove_pointcloud_message(
+    subscription_id: u32,
+    timestamp_ns: u64,
+    payload: &[u8],
+) -> Vec<u8> {
+    encode_message_data(subscription_id, timestamp_ns, payload)
 }
 
-fn encode_point_data(frame: &PointCloudFrame) -> Vec<u8> {
-    let row_data_size = frame.width as usize * frame.point_step as usize;
-    let mut data = Vec::with_capacity(row_data_size * frame.height as usize);
-
-    for row in 0..frame.height as usize {
-        let row_start = row * frame.row_step as usize;
-        let row_end = row_start + row_data_size;
-
-        data.extend_from_slice(&frame.data[row_start..row_end]);
-    }
-
-    if frame.endianness == crate::pointcloud::Endianness::Big {
-        convert_point_data_to_little_endian(&mut data, frame);
-    }
-
-    data
-}
-
-pub fn encode_pointcloud_payload(frame: &PointCloudFrame) -> Result<Vec<u8>, serde_json::Error> {
+pub fn encode_foxglove_pointcloud_payload(
+    frame: &PointCloudFrame,
+    point_data: &[u8],
+) -> Result<Vec<u8>, serde_json::Error> {
     let mut fields: Vec<FoxgloveField> = vec![];
     for field in &frame.fields {
         fields.push(FoxgloveField {
@@ -123,7 +90,6 @@ pub fn encode_pointcloud_payload(frame: &PointCloudFrame) -> Result<Vec<u8>, ser
         }
     }
 
-    let data = encode_point_data(frame);
     let foxgloves_pointcloud = FoxglovePointCloud {
         timestamp: FoxgloveTimestamp {
             sec: frame.timestamp_ns / 1_000_000_000,
@@ -145,13 +111,13 @@ pub fn encode_pointcloud_payload(frame: &PointCloudFrame) -> Result<Vec<u8>, ser
         },
         point_stride: frame.point_step,
         fields,
-        data,
+        data: point_data,
     };
 
     serde_json::to_vec(&foxgloves_pointcloud)
 }
 
-pub fn encode_message_data(subscription_id: u32, timestamp_ns: u64, payload: &[u8]) -> Vec<u8> {
+fn encode_message_data(subscription_id: u32, timestamp_ns: u64, payload: &[u8]) -> Vec<u8> {
     let mut message = Vec::with_capacity(1 + 4 + 8 + payload.len());
 
     message.push(FOXGLOVE_BINARY_OP_MESSAGE_DATA);
@@ -165,300 +131,244 @@ pub fn encode_message_data(subscription_id: u32, timestamp_ns: u64, payload: &[u
     message
 }
 
-#[test]
-fn message_data_encodes_header() {
-    let payload = [10, 20, 30];
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pointcloud::{Endianness, PointField};
 
-    let message = encode_message_data(3, 1000, &payload);
+    #[test]
+    fn message_data_encodes_header() {
+        let payload = [10, 20, 30];
 
-    assert_eq!(message[0], 0x01);
+        let message = encode_message_data(3, 1000, &payload);
 
-    assert_eq!(&message[1..5], &3u32.to_le_bytes(),);
+        assert_eq!(message[0], FOXGLOVE_BINARY_OP_MESSAGE_DATA);
+        assert_eq!(&message[1..5], &3u32.to_le_bytes());
+        assert_eq!(&message[5..13], &1000u64.to_le_bytes());
+        assert_eq!(&message[13..], &payload);
+    }
 
-    assert_eq!(&message[5..13], &1000u64.to_le_bytes(),);
+    #[test]
+    fn pointcloud_payload_encodes_required_fields() {
+        let mut point_data = Vec::new();
 
-    assert_eq!(&message[13..], &payload,);
-}
+        point_data.extend_from_slice(&1.0f32.to_le_bytes());
+        point_data.extend_from_slice(&2.0f32.to_le_bytes());
+        point_data.extend_from_slice(&3.0f32.to_le_bytes());
 
-#[test]
-fn pointcloud_payload_encodes_required_fields() {
-    let mut data = Vec::new();
-    data.extend_from_slice(&1.0f32.to_le_bytes());
-    data.extend_from_slice(&2.0f32.to_le_bytes());
-    data.extend_from_slice(&3.0f32.to_le_bytes());
+        let frame = PointCloudFrame {
+            timestamp_ns: 1_500_000_000,
+            frame_id: "lidar".to_string(),
+            width: 1,
+            height: 1,
+            fields: vec![
+                PointField {
+                    name: "x".to_string(),
+                    offset: 0,
+                    data_type: PointFieldDataType::Float32,
+                    count: 1,
+                },
+                PointField {
+                    name: "y".to_string(),
+                    offset: 4,
+                    data_type: PointFieldDataType::Float32,
+                    count: 1,
+                },
+                PointField {
+                    name: "z".to_string(),
+                    offset: 8,
+                    data_type: PointFieldDataType::Float32,
+                    count: 1,
+                },
+            ],
+            endianness: Endianness::Little,
+            point_step: 12,
+            row_step: 12,
+            is_dense: true,
+            data: point_data.clone(),
+        };
 
-    let frame = PointCloudFrame {
-        timestamp_ns: 1_500_000_000,
-        frame_id: "lidar".to_string(),
-        width: 1,
-        height: 1,
-        fields: vec![
-            crate::pointcloud::PointField {
+        let payload = encode_foxglove_pointcloud_payload(&frame, &point_data).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(json["timestamp"]["sec"], 1);
+        assert_eq!(json["timestamp"]["nsec"], 500_000_000);
+        assert_eq!(json["frame_id"], "lidar");
+
+        assert_eq!(json["pose"]["position"]["x"], 0.0);
+        assert_eq!(json["pose"]["position"]["y"], 0.0);
+        assert_eq!(json["pose"]["position"]["z"], 0.0);
+
+        assert_eq!(json["pose"]["orientation"]["x"], 0.0);
+        assert_eq!(json["pose"]["orientation"]["y"], 0.0);
+        assert_eq!(json["pose"]["orientation"]["z"], 0.0);
+        assert_eq!(json["pose"]["orientation"]["w"], 1.0);
+
+        assert_eq!(json["point_stride"], 12);
+
+        let fields = json["fields"].as_array().unwrap();
+
+        assert_eq!(fields.len(), 3);
+
+        assert_eq!(fields[0]["name"], "x");
+        assert_eq!(fields[0]["offset"], 0);
+        assert_eq!(fields[0]["type"], 7);
+
+        assert_eq!(fields[1]["name"], "y");
+        assert_eq!(fields[1]["offset"], 4);
+        assert_eq!(fields[1]["type"], 7);
+
+        assert_eq!(fields[2]["name"], "z");
+        assert_eq!(fields[2]["offset"], 8);
+        assert_eq!(fields[2]["type"], 7);
+
+        let actual_data: Vec<u8> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
+            .collect();
+
+        assert_eq!(actual_data, point_data);
+    }
+
+    #[test]
+    fn pointcloud_payload_expands_multi_value_field() {
+        let fields = vec![
+            PointField {
                 name: "x".to_string(),
                 offset: 0,
                 data_type: PointFieldDataType::Float32,
                 count: 1,
             },
-            crate::pointcloud::PointField {
+            PointField {
                 name: "y".to_string(),
                 offset: 4,
                 data_type: PointFieldDataType::Float32,
                 count: 1,
             },
-            crate::pointcloud::PointField {
+            PointField {
                 name: "z".to_string(),
                 offset: 8,
                 data_type: PointFieldDataType::Float32,
                 count: 1,
             },
-        ],
-        endianness: crate::pointcloud::Endianness::Little,
-        point_step: 12,
-        row_step: 12,
-        is_dense: true,
-        data: data.clone(),
-    };
-
-    let payload = encode_pointcloud_payload(&frame).unwrap();
-
-    let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-
-    assert_eq!(json["timestamp"]["sec"], 1);
-    assert_eq!(json["timestamp"]["nsec"], 500_000_000);
-    assert_eq!(json["frame_id"], "lidar");
-
-    assert_eq!(json["pose"]["orientation"]["w"], 1.0);
-
-    assert_eq!(json["point_stride"], 12);
-
-    assert_eq!(json["fields"].as_array().unwrap().len(), 3);
-
-    assert_eq!(json["fields"][0]["name"], "x");
-    assert_eq!(json["fields"][0]["offset"], 0);
-    assert_eq!(json["fields"][0]["type"], 7);
-
-    assert_eq!(json["fields"][1]["name"], "y");
-    assert_eq!(json["fields"][1]["offset"], 4);
-    assert_eq!(json["fields"][1]["type"], 7);
-
-    assert_eq!(json["fields"][2]["name"], "z");
-    assert_eq!(json["fields"][2]["offset"], 8);
-    assert_eq!(json["fields"][2]["type"], 7);
-
-    let expected_data = data.clone();
-    let actual_data: Vec<u8> = json["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
-        .collect();
-    assert_eq!(expected_data, actual_data);
-}
-
-#[test]
-fn pointcloud_payload_removes_row_padding() {
-    let mut data = Vec::new();
-
-    // row 1 - point
-    data.extend_from_slice(&1.0f32.to_le_bytes());
-    data.extend_from_slice(&2.0f32.to_le_bytes());
-    data.extend_from_slice(&3.0f32.to_le_bytes());
-
-    // row padding
-    data.extend_from_slice(&[99, 99, 99, 99]);
-
-    // row 2 - point
-    data.extend_from_slice(&4.0f32.to_le_bytes());
-    data.extend_from_slice(&5.0f32.to_le_bytes());
-    data.extend_from_slice(&6.0f32.to_le_bytes());
-
-    // row padding
-    data.extend_from_slice(&[88, 88, 88, 88]);
-
-    let frame = PointCloudFrame {
-        timestamp_ns: 0,
-        frame_id: "lidar".to_string(),
-        width: 1,
-        height: 2,
-        fields: vec![
-            crate::pointcloud::PointField {
-                name: "x".to_string(),
-                offset: 0,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
-                name: "y".to_string(),
-                offset: 4,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
-                name: "z".to_string(),
-                offset: 8,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-        ],
-        endianness: crate::pointcloud::Endianness::Little,
-        point_step: 12,
-        row_step: 16,
-        is_dense: true,
-        data,
-    };
-
-    let encoded = encode_point_data(&frame);
-
-    assert_eq!(encoded.len(), 24);
-
-    assert_eq!(
-        &encoded[0..12],
-        &[
-            1.0f32.to_le_bytes(),
-            2.0f32.to_le_bytes(),
-            3.0f32.to_le_bytes(),
-        ]
-        .concat(),
-    );
-
-    assert_eq!(
-        &encoded[12..24],
-        &[
-            4.0f32.to_le_bytes(),
-            5.0f32.to_le_bytes(),
-            6.0f32.to_le_bytes(),
-        ]
-        .concat(),
-    );
-
-    let payload = encode_pointcloud_payload(&frame).unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-
-    let data: Vec<u8> = json["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
-        .collect();
-
-    assert_eq!(data.len(), 24);
-}
-
-#[test]
-fn pointcloud_payload_converts_big_endian_to_little_endian() {
-    let mut data = Vec::new();
-
-    data.extend_from_slice(&1.0f32.to_be_bytes());
-    data.extend_from_slice(&2.0f32.to_be_bytes());
-    data.extend_from_slice(&3.0f32.to_be_bytes());
-
-    let frame = PointCloudFrame {
-        timestamp_ns: 0,
-        frame_id: "lidar".to_string(),
-        width: 1,
-        height: 1,
-        fields: vec![
-            crate::pointcloud::PointField {
-                name: "x".to_string(),
-                offset: 0,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
-                name: "y".to_string(),
-                offset: 4,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
-                name: "z".to_string(),
-                offset: 8,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-        ],
-        endianness: crate::pointcloud::Endianness::Big,
-        point_step: 12,
-        row_step: 12,
-        is_dense: true,
-        data,
-    };
-
-    let encoded = encode_point_data(&frame);
-
-    let mut expected = Vec::new();
-    expected.extend_from_slice(&1.0f32.to_le_bytes());
-    expected.extend_from_slice(&2.0f32.to_le_bytes());
-    expected.extend_from_slice(&3.0f32.to_le_bytes());
-
-    assert_eq!(encoded, expected);
-}
-
-#[test]
-fn pointcloud_payload_expands_multi_value_field() {
-    let mut data = Vec::new();
-
-    data.extend_from_slice(&1.0f32.to_le_bytes());
-    data.extend_from_slice(&2.0f32.to_le_bytes());
-    data.extend_from_slice(&3.0f32.to_le_bytes());
-
-    data.extend_from_slice(&0.1f32.to_le_bytes());
-    data.extend_from_slice(&0.2f32.to_le_bytes());
-    data.extend_from_slice(&0.3f32.to_le_bytes());
-
-    let frame = PointCloudFrame {
-        timestamp_ns: 0,
-        frame_id: "lidar".to_string(),
-        width: 1,
-        height: 1,
-        fields: vec![
-            crate::pointcloud::PointField {
-                name: "x".to_string(),
-                offset: 0,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
-                name: "y".to_string(),
-                offset: 4,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
-                name: "z".to_string(),
-                offset: 8,
-                data_type: PointFieldDataType::Float32,
-                count: 1,
-            },
-            crate::pointcloud::PointField {
+            PointField {
                 name: "normal".to_string(),
                 offset: 12,
                 data_type: PointFieldDataType::Float32,
                 count: 3,
             },
-        ],
-        endianness: crate::pointcloud::Endianness::Little,
-        point_step: 24,
-        row_step: 24,
-        is_dense: true,
-        data,
-    };
+        ];
 
-    let payload = encode_pointcloud_payload(&frame).unwrap();
+        let point_data = vec![0u8; 24];
 
-    let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        let frame = PointCloudFrame {
+            timestamp_ns: 0,
+            frame_id: "lidar".to_string(),
+            width: 1,
+            height: 1,
+            fields,
+            endianness: Endianness::Little,
+            point_step: 24,
+            row_step: 24,
+            is_dense: true,
+            data: point_data.clone(),
+        };
 
-    assert_eq!(json["fields"].as_array().unwrap().len(), 6);
+        let payload = encode_foxglove_pointcloud_payload(&frame, &point_data).unwrap();
 
-    assert_eq!(json["fields"][3]["name"], "normal");
-    assert_eq!(json["fields"][3]["offset"], 12);
-    assert_eq!(json["fields"][3]["type"], 7);
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
 
-    assert_eq!(json["fields"][4]["name"], "normal[1]");
-    assert_eq!(json["fields"][4]["offset"], 16);
-    assert_eq!(json["fields"][4]["type"], 7);
+        let fields = json["fields"].as_array().unwrap();
 
-    assert_eq!(json["fields"][5]["name"], "normal[2]");
-    assert_eq!(json["fields"][5]["offset"], 20);
-    assert_eq!(json["fields"][5]["type"], 7);
+        assert_eq!(fields.len(), 6);
+
+        assert_eq!(fields[3]["name"], "normal");
+        assert_eq!(fields[3]["offset"], 12);
+        assert_eq!(fields[3]["type"], 7);
+
+        assert_eq!(fields[4]["name"], "normal[1]");
+        assert_eq!(fields[4]["offset"], 16);
+        assert_eq!(fields[4]["type"], 7);
+
+        assert_eq!(fields[5]["name"], "normal[2]");
+        assert_eq!(fields[5]["offset"], 20);
+        assert_eq!(fields[5]["type"], 7);
+    }
+
+    #[test]
+    fn foxglove_pointcloud_message_encodes_complete_message() {
+        let point_data = [
+            1.0f32.to_le_bytes(),
+            2.0f32.to_le_bytes(),
+            3.0f32.to_le_bytes(),
+        ]
+        .concat();
+
+        let frame = PointCloudFrame {
+            timestamp_ns: 123456789,
+            frame_id: "lidar".to_string(),
+            width: 1,
+            height: 1,
+            fields: vec![
+                PointField {
+                    name: "x".to_string(),
+                    offset: 0,
+                    data_type: PointFieldDataType::Float32,
+                    count: 1,
+                },
+                PointField {
+                    name: "y".to_string(),
+                    offset: 4,
+                    data_type: PointFieldDataType::Float32,
+                    count: 1,
+                },
+                PointField {
+                    name: "z".to_string(),
+                    offset: 8,
+                    data_type: PointFieldDataType::Float32,
+                    count: 1,
+                },
+            ],
+            endianness: Endianness::Little,
+            point_step: 12,
+            row_step: 12,
+            is_dense: true,
+            data: point_data.clone(),
+        };
+
+        let subscription_id = 10;
+
+        let payload = encode_foxglove_pointcloud_payload(&frame, &point_data);
+        let message = encode_foxglove_pointcloud_message(
+            subscription_id,
+            frame.timestamp_ns,
+            &payload.unwrap(),
+        );
+
+        assert_eq!(message[0], FOXGLOVE_BINARY_OP_MESSAGE_DATA);
+
+        let actual_subscription_id = u32::from_le_bytes(message[1..5].try_into().unwrap());
+
+        assert_eq!(actual_subscription_id, subscription_id);
+
+        let actual_timestamp_ns = u64::from_le_bytes(message[5..13].try_into().unwrap());
+
+        assert_eq!(actual_timestamp_ns, frame.timestamp_ns);
+
+        let json: serde_json::Value = serde_json::from_slice(&message[13..]).unwrap();
+
+        assert_eq!(json["frame_id"], "lidar");
+
+        let actual_data: Vec<u8> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
+            .collect();
+
+        assert_eq!(actual_data, point_data);
+    }
 }
