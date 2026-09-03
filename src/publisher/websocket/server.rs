@@ -12,7 +12,7 @@ use crate::publisher::foxgloves::{
 use crate::publisher::pointcloud_wire::{
     ChannelList, POINTCLOUD_WIRE_SUBPROTOCOL, Subscribe as WireSubscribe, Subscribed,
     SubscribedChannel, Unsubscribe as WireUnsubscribe, WIRE_OP_SUBSCRIBE, WIRE_OP_UNSUBSCRIBE,
-    WireOperation,
+    WireOperation, encode_pointcloud_message,
 };
 use crate::publisher::websocket::WebsocketEvent;
 use crate::publisher::{ChannelId, ChannelRegistry};
@@ -414,17 +414,19 @@ impl WebsocketServer {
         channel_id: ChannelId,
         frame: &PointCloudFrame,
     ) -> Result<(), serde_json::Error> {
-        if self.channels.get(channel_id).is_none() {
+        let channel = match self.channels.get(channel_id) {
+            Some(channel) => channel,
+            None => return Ok(()),
+        };
+
+        if frame.point_step != channel.layout.point_step || frame.fields != channel.layout.fields {
             return Ok(());
         }
 
         let targets = {
             let clients = self.clients.lock().await;
             let mut foxgloves_targets = vec![];
-            let wire_targets: Vec<(
-                tokio::sync::mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
-                u32,
-            )> = vec![];
+            let mut wire_targets = vec![];
 
             for client in clients.values() {
                 match client.subprotocol {
@@ -446,7 +448,11 @@ impl WebsocketServer {
                         }
                     }
                     Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
-                        // TODO: wire encoder 구현 후 추가
+                        for (subscription_id, subscribed_channel_id) in &client.subscriptions {
+                            if *subscribed_channel_id == channel_id {
+                                wire_targets.push((client.tx.clone(), *subscription_id));
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -459,22 +465,30 @@ impl WebsocketServer {
             return Ok(());
         }
 
-        let payload = encode_pointcloud_payload(frame)?;
-
         // foxgloves targets
-        for (tx, subscription_id) in targets.0 {
-            let message = encode_message_data(subscription_id, frame.timestamp_ns, &payload);
+        if !targets.0.is_empty() {
+            if let Ok(payload) = encode_pointcloud_payload(frame) {
+                for (tx, subscription_id) in targets.0 {
+                    let message =
+                        encode_message_data(subscription_id, frame.timestamp_ns, &payload);
 
+                    let _ = tx
+                        .send(tokio_tungstenite::tungstenite::Message::Binary(
+                            message.into(),
+                        ))
+                        .await;
+                }
+            }
+        }
+
+        // wire targets
+        for (tx, subscription_id) in targets.1 {
+            let message = encode_pointcloud_message(subscription_id, frame);
             let _ = tx
                 .send(tokio_tungstenite::tungstenite::Message::Binary(
                     message.into(),
                 ))
                 .await;
-        }
-
-        // wire targets
-        for (_tx, _subscription_id) in targets.1 {
-            // TODO: wire encoder 구현 후 추가
         }
 
         Ok(())
