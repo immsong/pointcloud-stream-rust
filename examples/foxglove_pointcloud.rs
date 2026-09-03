@@ -1,13 +1,39 @@
 use std::time::Duration;
 
-use pointcloud_stream::pointcloud::{Endianness, PointCloudFrame, PointField, PointFieldDataType};
+use pointcloud_stream::pointcloud::{
+    Endianness, PointCloudFrame, PointCloudLayout, PointField, PointFieldDataType,
+};
 use pointcloud_stream::publisher::websocket::{WebsocketEvent, WebsocketServer};
 
 #[tokio::main]
 async fn main() {
     let mut server = WebsocketServer::new("127.0.0.1:18282");
 
-    let pointcloud_channel = server.register_channel("/pointcloud");
+    let layout = PointCloudLayout {
+        point_step: 12,
+        fields: vec![
+            PointField {
+                name: "x".to_string(),
+                offset: 0,
+                data_type: PointFieldDataType::Float32,
+                count: 1,
+            },
+            PointField {
+                name: "y".to_string(),
+                offset: 4,
+                data_type: PointFieldDataType::Float32,
+                count: 1,
+            },
+            PointField {
+                name: "z".to_string(),
+                offset: 8,
+                data_type: PointFieldDataType::Float32,
+                count: 1,
+            },
+        ],
+    };
+
+    let pointcloud_channel = server.register_channel("/pointcloud", layout);
 
     let running_server = server.clone();
 
