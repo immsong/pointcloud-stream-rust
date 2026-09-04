@@ -379,7 +379,7 @@ impl WebsocketServer {
             Some(tx) => {
                 return tx.send(msg).await.is_ok();
             }
-            None => return false,
+            None => false,
         }
     }
 
@@ -395,13 +395,13 @@ impl WebsocketServer {
             .headers()
             .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL);
 
-        if let Some(header_protocol) = header_protocol {
-            if let Ok(header_protocol_str) = header_protocol.to_str() {
-                for supported in SUPPORTED_SUBPROTOCOLS {
-                    for requested in header_protocol_str.split(',') {
-                        if requested.trim() == *supported {
-                            return Some(*supported);
-                        }
+        if let Some(header_protocol) = header_protocol
+            && let Ok(header_protocol_str) = header_protocol.to_str()
+        {
+            for supported in SUPPORTED_SUBPROTOCOLS {
+                for requested in header_protocol_str.split(',') {
+                    if requested.trim() == *supported {
+                        return Some(*supported);
                     }
                 }
             }
@@ -455,21 +455,21 @@ impl WebsocketServer {
         let point_data = pack_point_data(frame);
 
         // foxgloves targets
-        if !targets.0.is_empty() {
-            if let Ok(payload) = encode_foxglove_pointcloud_payload(&frame, &point_data) {
-                for (tx, subscription_id) in targets.0 {
-                    let message = encode_foxglove_pointcloud_message(
-                        subscription_id,
-                        frame.timestamp_ns,
-                        &payload,
-                    );
+        if !targets.0.is_empty()
+            && let Ok(payload) = encode_foxglove_pointcloud_payload(frame, &point_data)
+        {
+            for (tx, subscription_id) in targets.0 {
+                let message = encode_foxglove_pointcloud_message(
+                    subscription_id,
+                    frame.timestamp_ns,
+                    &payload,
+                );
 
-                    let _ = tx
-                        .send(tokio_tungstenite::tungstenite::Message::Binary(
-                            message.into(),
-                        ))
-                        .await;
-                }
+                let _ = tx
+                    .send(tokio_tungstenite::tungstenite::Message::Binary(
+                        message.into(),
+                    ))
+                    .await;
             }
         }
 
