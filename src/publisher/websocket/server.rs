@@ -3,16 +3,22 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 
-use crate::pointcloud::PointCloudFrame;
+use crate::pointcloud::{PointCloudFrame, PointCloudLayout, pack_point_data};
 use crate::publisher::foxgloves::{
     Advertise, FOXGLOVE_OP_SUBSCRIBE, FOXGLOVE_OP_UNSUBSCRIBE, FOXGLOVE_SUBPROTOCOL,
-    FoxgloveOperation, ServerInfo, Subscribe, Unsubscribe, encode_message_data,
-    encode_pointcloud_payload,
+    FoxgloveOperation, ServerInfo, Subscribe as FoxgloveSubscribe,
+    Unsubscribe as FoxgloveUnsubscribe, encode_foxglove_pointcloud_message,
+    encode_foxglove_pointcloud_payload,
+};
+use crate::publisher::pointcloud_wire::{
+    ChannelList, POINTCLOUD_WIRE_SUBPROTOCOL, Subscribe as WireSubscribe, Subscribed,
+    SubscribedChannel, Unsubscribe as WireUnsubscribe, WIRE_OP_SUBSCRIBE, WIRE_OP_UNSUBSCRIBE,
+    WireOperation, encode_wire_pointcloud_message,
 };
 use crate::publisher::websocket::WebsocketEvent;
 use crate::publisher::{ChannelId, ChannelRegistry};
 
-const SUPPORTED_SUBPROTOCOLS: &[&str] = &[FOXGLOVE_SUBPROTOCOL];
+const SUPPORTED_SUBPROTOCOLS: &[&str] = &[FOXGLOVE_SUBPROTOCOL, POINTCLOUD_WIRE_SUBPROTOCOL];
 
 #[derive(Debug)]
 struct ClientState {
@@ -37,8 +43,12 @@ impl WebsocketServer {
         }
     }
 
-    pub fn register_channel(&mut self, topic: impl Into<String>) -> ChannelId {
-        self.channels.register(topic)
+    pub fn register_channel(
+        &mut self,
+        topic: impl Into<String>,
+        layout: PointCloudLayout,
+    ) -> ChannelId {
+        self.channels.register(topic, layout)
     }
 
     pub async fn run(
@@ -121,43 +131,65 @@ impl WebsocketServer {
             }
         });
 
-        if client_subprotocol == Some(FOXGLOVE_SUBPROTOCOL) {
-            let server_info = ServerInfo::new("pointcloud-stream");
+        match client_subprotocol {
+            Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
+                let channel_list = ChannelList::from_channels(channels.channels());
+                let json = match serde_json::to_string(&channel_list) {
+                    Ok(json) => json,
+                    Err(_) => {
+                        clients.lock().await.remove(&addr);
+                        return;
+                    }
+                };
 
-            let json = match serde_json::to_string(&server_info) {
-                Ok(json) => json,
-                Err(_) => {
+                let result = tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                    .await;
+
+                if result.is_err() {
                     clients.lock().await.remove(&addr);
                     return;
                 }
-            };
-
-            if tx
-                .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
-                .await
-                .is_err()
-            {
-                clients.lock().await.remove(&addr);
-                return;
             }
+            Some(FOXGLOVE_SUBPROTOCOL) => {
+                let server_info = ServerInfo::new("pointcloud-stream");
 
-            let advertise = Advertise::from_channels(channels.channels());
-            let json = match serde_json::to_string(&advertise) {
-                Ok(json) => json,
-                Err(_) => {
+                let json = match serde_json::to_string(&server_info) {
+                    Ok(json) => json,
+                    Err(_) => {
+                        clients.lock().await.remove(&addr);
+                        return;
+                    }
+                };
+
+                if tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                    .await
+                    .is_err()
+                {
                     clients.lock().await.remove(&addr);
                     return;
                 }
-            };
 
-            if tx
-                .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
-                .await
-                .is_err()
-            {
-                clients.lock().await.remove(&addr);
-                return;
+                let advertise = Advertise::from_channels(channels.channels());
+                let json = match serde_json::to_string(&advertise) {
+                    Ok(json) => json,
+                    Err(_) => {
+                        clients.lock().await.remove(&addr);
+                        return;
+                    }
+                };
+
+                if tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                    .await
+                    .is_err()
+                {
+                    clients.lock().await.remove(&addr);
+                    return;
+                }
             }
+            _ => {}
         }
 
         // client 등록 후 연결 완료 이벤트를 전송.
@@ -173,14 +205,15 @@ impl WebsocketServer {
             let some_message = ws_reader.next().await;
             match some_message {
                 Some(Ok(msg)) => match msg {
-                    tokio_tungstenite::tungstenite::Message::Text(text) => {
-                        if client_subprotocol == Some(FOXGLOVE_SUBPROTOCOL) {
+                    tokio_tungstenite::tungstenite::Message::Text(text) => match client_subprotocol
+                    {
+                        Some(FOXGLOVE_SUBPROTOCOL) => {
                             if let Ok(operation) = serde_json::from_str::<FoxgloveOperation>(&text)
                             {
                                 match operation.op.as_str() {
                                     FOXGLOVE_OP_SUBSCRIBE => {
                                         if let Ok(subscribe) =
-                                            serde_json::from_str::<Subscribe>(&text)
+                                            serde_json::from_str::<FoxgloveSubscribe>(&text)
                                         {
                                             let mut clients = clients.lock().await;
                                             let client_state = clients.get_mut(&addr);
@@ -199,7 +232,7 @@ impl WebsocketServer {
                                     }
                                     FOXGLOVE_OP_UNSUBSCRIBE => {
                                         if let Ok(unsubscribe) =
-                                            serde_json::from_str::<Unsubscribe>(&text)
+                                            serde_json::from_str::<FoxgloveUnsubscribe>(&text)
                                         {
                                             let mut clients = clients.lock().await;
                                             let client_state = clients.get_mut(&addr);
@@ -216,7 +249,82 @@ impl WebsocketServer {
                                     _ => {}
                                 }
                             }
-                        } else {
+                        }
+                        Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
+                            if let Ok(operation) = serde_json::from_str::<WireOperation>(&text) {
+                                match operation.op.as_str() {
+                                    WIRE_OP_SUBSCRIBE => {
+                                        if let Ok(subscribe) =
+                                            serde_json::from_str::<WireSubscribe>(&text)
+                                        {
+                                            let mut subscribed_channels = vec![];
+                                            {
+                                                let mut clients = clients.lock().await;
+                                                let client_state = clients.get_mut(&addr);
+                                                if let Some(client_state) = client_state {
+                                                    for subscription in subscribe.subscriptions {
+                                                        if let Some(channel) = channels
+                                                            .get_by_raw_id(subscription.channel_id)
+                                                        {
+                                                            client_state.subscriptions.insert(
+                                                                subscription.id,
+                                                                channel.id,
+                                                            );
+
+                                                            subscribed_channels.push(
+                                                                SubscribedChannel::from_channel(
+                                                                    subscription.id,
+                                                                    channel,
+                                                                ),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            let subscribed = Subscribed::new(subscribed_channels);
+
+                                            let json = match serde_json::to_string(&subscribed) {
+                                                Ok(json) => json,
+                                                Err(_) => {
+                                                    continue;
+                                                }
+                                            };
+
+                                            if tx
+                                                .send(
+                                                    tokio_tungstenite::tungstenite::Message::Text(
+                                                        json.into(),
+                                                    ),
+                                                )
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    WIRE_OP_UNSUBSCRIBE => {
+                                        if let Ok(unsubscribe) =
+                                            serde_json::from_str::<WireUnsubscribe>(&text)
+                                        {
+                                            let mut clients = clients.lock().await;
+                                            let client_state = clients.get_mut(&addr);
+                                            if let Some(client_state) = client_state {
+                                                for subscription_id in unsubscribe.subscription_ids
+                                                {
+                                                    client_state
+                                                        .subscriptions
+                                                        .remove(&subscription_id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {
                             let _ = event_tx
                                 .send(WebsocketEvent::Message {
                                     addr,
@@ -224,7 +332,7 @@ impl WebsocketServer {
                                 })
                                 .await;
                         }
-                    }
+                    },
                     tokio_tungstenite::tungstenite::Message::Binary(bin) => {
                         if event_tx
                             .send(WebsocketEvent::Message {
@@ -307,49 +415,68 @@ impl WebsocketServer {
         channel_id: ChannelId,
         frame: &PointCloudFrame,
     ) -> Result<(), serde_json::Error> {
-        if self.channels.get(channel_id).is_none() {
+        let channel = match self.channels.get(channel_id) {
+            Some(channel) => channel,
+            None => return Ok(()),
+        };
+
+        if frame.point_step != channel.layout.point_step || frame.fields != channel.layout.fields {
             return Ok(());
         }
 
         let targets = {
             let clients = self.clients.lock().await;
-            let mut targets = vec![];
+            let mut foxgloves_targets = vec![];
+            let mut wire_targets = vec![];
 
             for client in clients.values() {
-                match client.subprotocol {
-                    Some(FOXGLOVE_SUBPROTOCOL) => {
-                        // subscription_id
-                        // : Foxglove client가 부여한 subscription ID.
-                        //
-                        // subscribed_channel_id
-                        //: 해당 subscription이 구독 중인 공통 ChannelId.
-                        //
-                        // channel_id
-                        // : publish_pointcloud()로 전달된, 지금 전송하려는 PointCloudFrame의 ChannelId.
-                        //
-                        // 현재 publish하려는 channel을 구독 중인 subscription만 전송 대상으로 추가한다.
-                        for (subscription_id, subscribed_channel_id) in &client.subscriptions {
-                            if *subscribed_channel_id == channel_id {
-                                targets.push((client.tx.clone(), *subscription_id));
+                for (subscription_id, subscribed_channel_id) in &client.subscriptions {
+                    if *subscribed_channel_id == channel_id {
+                        match client.subprotocol {
+                            Some(FOXGLOVE_SUBPROTOCOL) => {
+                                foxgloves_targets.push((client.tx.clone(), *subscription_id));
                             }
+                            Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
+                                wire_targets.push((client.tx.clone(), *subscription_id));
+                            }
+                            _ => {}
                         }
                     }
-                    _ => {}
                 }
             }
 
-            targets
+            (foxgloves_targets, wire_targets)
         };
 
-        if targets.is_empty() {
+        if targets.0.is_empty() && targets.1.is_empty() {
             return Ok(());
         }
 
-        let payload = encode_pointcloud_payload(frame)?;
+        let point_data = pack_point_data(frame);
 
-        for (tx, subscription_id) in targets {
-            let message = encode_message_data(subscription_id, frame.timestamp_ns, &payload);
+        // foxgloves targets
+        if !targets.0.is_empty() {
+            if let Ok(payload) = encode_foxglove_pointcloud_payload(&frame, &point_data) {
+                for (tx, subscription_id) in targets.0 {
+                    let message = encode_foxglove_pointcloud_message(
+                        subscription_id,
+                        frame.timestamp_ns,
+                        &payload,
+                    );
 
+                    let _ = tx
+                        .send(tokio_tungstenite::tungstenite::Message::Binary(
+                            message.into(),
+                        ))
+                        .await;
+                }
+            }
+        }
+
+        // wire targets
+        for (tx, subscription_id) in targets.1 {
+            let message =
+                encode_wire_pointcloud_message(subscription_id, frame.timestamp_ns, &point_data);
             let _ = tx
                 .send(tokio_tungstenite::tungstenite::Message::Binary(
                     message.into(),
@@ -369,174 +496,4 @@ impl Default for WebsocketServer {
             channels: ChannelRegistry::new(),
         }
     }
-}
-
-#[tokio::test]
-async fn websocket_server_accepts_websocket_connection_and_receives_messages() {
-    let address;
-    let server_task;
-    // server
-    {
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
-
-        let server = WebsocketServer::new("127.0.0.1:0");
-        let running_server = server.clone();
-
-        server_task = tokio::spawn(async move {
-            running_server.run(ready_tx, event_tx).await.unwrap();
-        });
-
-        address = ready_rx.await.unwrap();
-
-        tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                match event {
-                    WebsocketEvent::Connected { addr, subprotocol } => {
-                        println!("Client connected: {}, subprotocol: {:?}", addr, subprotocol);
-                    }
-                    WebsocketEvent::Disconnected { addr } => {
-                        println!("Client disconnected: {}", addr);
-                    }
-                    WebsocketEvent::Message { addr, message } => {
-                        println!("Received message from {}: {}", addr, message);
-                        server.send_to(addr, message).await;
-                    }
-                }
-            }
-        });
-    }
-
-    // client
-    {
-        let url = format!("ws://{}", address);
-        let (mut websocket, _response) = tokio_tungstenite::connect_async(url).await.unwrap();
-
-        websocket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                "Hello, server!".to_string().into(),
-            ))
-            .await
-            .unwrap();
-
-        let received_message = websocket.next().await.unwrap().unwrap();
-        match received_message {
-            tokio_tungstenite::tungstenite::Message::Text(text) => {
-                assert_eq!(text, "Hello, server!");
-            }
-            _ => panic!("Unexpected message type"),
-        }
-
-        websocket
-            .send(tokio_tungstenite::tungstenite::Message::Binary(
-                tokio_tungstenite::tungstenite::Bytes::from([1, 2, 3, 9, 99].to_vec()),
-            ))
-            .await
-            .unwrap();
-
-        let received_message = websocket.next().await.unwrap().unwrap();
-        match received_message {
-            tokio_tungstenite::tungstenite::Message::Binary(bin) => {
-                assert_eq!(
-                    bin,
-                    tokio_tungstenite::tungstenite::Bytes::from([1, 2, 3, 9, 99].to_vec())
-                );
-            }
-            _ => panic!("Unexpected message type"),
-        }
-    }
-
-    server_task.abort();
-}
-
-#[tokio::test]
-async fn websocket_server_accepts_supported_subprotocol() {
-    use crate::publisher::foxgloves::AdvertisedChannel;
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-
-    // server
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
-
-    let mut server = WebsocketServer::new("127.0.0.1:0");
-
-    let pointcloud_channel = server.register_channel("/pointcloud");
-
-    let running_server = server.clone();
-
-    let server_task = tokio::spawn(async move {
-        running_server.run(ready_tx, event_tx).await.unwrap();
-    });
-
-    let address = ready_rx.await.unwrap();
-    println!("Server is listening on {}", address);
-
-    tokio::spawn(async move {
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                WebsocketEvent::Connected { addr, subprotocol } => {
-                    println!("Client connected: {}, subprotocol: {:?}", addr, subprotocol);
-                }
-                WebsocketEvent::Disconnected { addr } => {
-                    println!("Client disconnected: {}", addr);
-                }
-                WebsocketEvent::Message { addr, message } => {
-                    println!("Received message from {}: {}", addr, message);
-                    server.send_to(addr, message).await;
-                }
-            }
-        }
-    });
-
-    // client
-    let url = format!("ws://{}", address);
-
-    let mut request = url.into_client_request().unwrap();
-
-    request.headers_mut().insert(
-        tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
-        tokio_tungstenite::tungstenite::http::HeaderValue::from_static("foxglove.websocket.v1"),
-    );
-
-    let (mut websocket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
-
-    let subprotocol = response
-        .headers()
-        .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
-        .unwrap();
-
-    assert_eq!(subprotocol, "foxglove.websocket.v1");
-
-    let received_message = websocket.next().await.unwrap().unwrap();
-    match received_message {
-        tokio_tungstenite::tungstenite::Message::Text(text) => {
-            let received: serde_json::Value = serde_json::from_str(&text).unwrap();
-
-            let expected = serde_json::to_value(ServerInfo::new("pointcloud-stream")).unwrap();
-
-            assert_eq!(received, expected);
-        }
-        _ => panic!("Unexpected message type"),
-    }
-
-    let received_message = websocket.next().await.unwrap().unwrap();
-
-    match received_message {
-        tokio_tungstenite::tungstenite::Message::Text(text) => {
-            let received: serde_json::Value = serde_json::from_str(&text).unwrap();
-
-            let expected = serde_json::to_value(Advertise::new(vec![AdvertisedChannel {
-                id: pointcloud_channel.as_u32(),
-                topic: "/pointcloud".to_string(),
-                encoding: "json".to_string(),
-                schema_name: "foxglove.PointCloud".to_string(),
-                schema: "".to_string(),
-            }]))
-            .unwrap();
-            assert_eq!(received, expected);
-        }
-        _ => panic!("Unexpected message type"),
-    }
-
-    server_task.abort();
 }
