@@ -121,19 +121,17 @@ impl PointCloudFrame {
             }
         }
 
-        let index = coordinate_fields_found.iter().position(|f| *f == false);
-        match index {
-            Some(index) => {
-                return Err(PointCloudError::MissingCoordinateField {
-                    field_name: match index {
-                        0 => "x".to_string(),
-                        1 => "y".to_string(),
-                        2 => "z".to_string(),
-                        _ => unreachable!(),
-                    },
-                });
-            }
-            None => {}
+        let index = coordinate_fields_found.iter().position(|f| !*f);
+
+        if let Some(index) = index {
+            return Err(PointCloudError::MissingCoordinateField {
+                field_name: match index {
+                    0 => "x".to_string(),
+                    1 => "y".to_string(),
+                    2 => "z".to_string(),
+                    _ => unreachable!(),
+                },
+            });
         }
 
         for (index, field) in self.fields.iter().enumerate() {
