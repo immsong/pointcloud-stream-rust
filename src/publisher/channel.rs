@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use crate::pointcloud::PointCloudLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,19 +20,21 @@ pub struct Channel {
 
 #[derive(Clone)]
 pub struct ChannelRegistry {
-    channels: Vec<Channel>,
+    channels: Arc<RwLock<Vec<Channel>>>,
 }
 
 impl ChannelRegistry {
     pub fn new() -> Self {
         Self {
-            channels: Vec::new(),
+            channels: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    pub fn register(&mut self, topic: impl Into<String>, layout: PointCloudLayout) -> ChannelId {
-        let id = ChannelId(self.channels.len() as u32);
-        self.channels.push(Channel {
+    pub fn register(&self, topic: impl Into<String>, layout: PointCloudLayout) -> ChannelId {
+        let mut channels = self.channels.write().unwrap();
+        let id = ChannelId(channels.len() as u32);
+
+        channels.push(Channel {
             id,
             topic: topic.into(),
             layout,
@@ -39,18 +43,26 @@ impl ChannelRegistry {
         id
     }
 
-    pub fn get(&self, id: ChannelId) -> Option<&Channel> {
-        self.channels.iter().find(|ch| ch.id == id)
-    }
-
-    pub fn channels(&self) -> &[Channel] {
-        &self.channels
-    }
-
-    pub fn get_by_raw_id(&self, id: u32) -> Option<&Channel> {
+    pub fn get(&self, id: ChannelId) -> Option<Channel> {
         self.channels
+            .read()
+            .unwrap()
+            .iter()
+            .find(|channel| channel.id == id)
+            .cloned()
+    }
+
+    pub fn channels(&self) -> Vec<Channel> {
+        self.channels.read().unwrap().clone()
+    }
+
+    pub fn get_by_raw_id(&self, id: u32) -> Option<Channel> {
+        self.channels
+            .read()
+            .unwrap()
             .iter()
             .find(|channel| channel.id.as_u32() == id)
+            .cloned()
     }
 }
 
@@ -62,7 +74,7 @@ impl Default for ChannelRegistry {
 
 #[test]
 fn registry_assigns_unique_channel_ids() {
-    let mut registry = ChannelRegistry::new();
+    let registry = ChannelRegistry::new();
 
     let front = registry.register("/lidar/front", PointCloudLayout::new(0, Vec::new()));
     let rear = registry.register("/lidar/rear", PointCloudLayout::new(0, Vec::new()));
@@ -71,4 +83,18 @@ fn registry_assigns_unique_channel_ids() {
     assert_eq!(rear.as_u32(), 1);
 
     assert_eq!(registry.channels().len(), 2);
+}
+
+#[test]
+fn cloned_registry_shares_registered_channels() {
+    let registry = ChannelRegistry::new();
+    let cloned_registry = registry.clone();
+
+    let channel_id = registry.register("/lidar/front", PointCloudLayout::new(0, Vec::new()));
+
+    let channel = cloned_registry
+        .get(channel_id)
+        .expect("registered channel should be visible from cloned registry");
+
+    assert_eq!(channel.topic, "/lidar/front");
 }

@@ -7,7 +7,7 @@ use pointcloud_stream::publisher::websocket::{WebsocketEvent, WebsocketServer};
 
 #[tokio::main]
 async fn main() {
-    let mut server = WebsocketServer::new("127.0.0.1:18282");
+    let server = WebsocketServer::new("127.0.0.1:18282");
 
     let layout = PointCloudLayout {
         point_step: 12,
