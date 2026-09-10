@@ -14,7 +14,7 @@ async fn websocket_server_accepts_pointcloud_wire_subprotocol() {
 
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
 
-    let mut server = WebsocketServer::new("127.0.0.1:0");
+    let server = WebsocketServer::new("127.0.0.1:0");
 
     let front_channel =
         server.register_channel("/lidar/front", PointCloudLayout::new(0, Vec::new()));
@@ -82,7 +82,7 @@ async fn websocket_server_handles_pointcloud_wire_subscription() {
 
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
 
-    let mut server = WebsocketServer::new("127.0.0.1:0");
+    let server = WebsocketServer::new("127.0.0.1:0");
 
     let layout = PointCloudLayout::new(
         12,
@@ -218,7 +218,7 @@ async fn websocket_server_publishes_pointcloud_wire_binary_message() {
 
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
 
-    let mut server = WebsocketServer::new("127.0.0.1:0");
+    let server = WebsocketServer::new("127.0.0.1:0");
 
     let fields = vec![
         PointField {

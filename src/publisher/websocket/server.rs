@@ -44,7 +44,7 @@ impl WebsocketServer {
     }
 
     pub fn register_channel(
-        &mut self,
+        &self,
         topic: impl Into<String>,
         layout: PointCloudLayout,
     ) -> ChannelId {
@@ -133,7 +133,10 @@ impl WebsocketServer {
 
         match client_subprotocol {
             Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
-                let channel_list = ChannelList::from_channels(channels.channels());
+                let registered_channels = channels.channels();
+
+                let channel_list = ChannelList::from_channels(&registered_channels);
+
                 let json = match serde_json::to_string(&channel_list) {
                     Ok(json) => json,
                     Err(_) => {
@@ -171,7 +174,10 @@ impl WebsocketServer {
                     return;
                 }
 
-                let advertise = Advertise::from_channels(channels.channels());
+                let registered_channels = channels.channels();
+
+                let advertise = Advertise::from_channels(&registered_channels);
+
                 let json = match serde_json::to_string(&advertise) {
                     Ok(json) => json,
                     Err(_) => {
@@ -274,7 +280,7 @@ impl WebsocketServer {
                                                             subscribed_channels.push(
                                                                 SubscribedChannel::from_channel(
                                                                     subscription.id,
-                                                                    channel,
+                                                                    &channel,
                                                                 ),
                                                             );
                                                         }

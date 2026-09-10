@@ -88,7 +88,7 @@ async fn websocket_server_accepts_supported_subprotocol() {
 
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<WebsocketEvent>(32);
 
-    let mut server = WebsocketServer::new("127.0.0.1:0");
+    let server = WebsocketServer::new("127.0.0.1:0");
 
     let pointcloud_channel =
         server.register_channel("/pointcloud", PointCloudLayout::new(0, Vec::new()));
