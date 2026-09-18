@@ -90,8 +90,11 @@ async fn websocket_server_accepts_supported_subprotocol() {
 
     let server = WebsocketServer::new("127.0.0.1:0");
 
-    let pointcloud_channel =
-        server.register_channel("/pointcloud", PointCloudLayout::new(0, Vec::new()));
+    let pointcloud_channel = server.register_channel(
+        "instance_1",
+        "/pointcloud",
+        PointCloudLayout::new(0, Vec::new()),
+    );
 
     let running_server = server.clone();
 

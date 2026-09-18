@@ -16,6 +16,7 @@ pub struct Channel {
     pub id: ChannelId,
     pub topic: String,
     pub layout: PointCloudLayout,
+    pub instance_id: String,
 }
 
 #[derive(Clone)]
@@ -30,7 +31,12 @@ impl ChannelRegistry {
         }
     }
 
-    pub fn register(&self, topic: impl Into<String>, layout: PointCloudLayout) -> ChannelId {
+    pub fn register(
+        &self,
+        instance_id: impl Into<String>,
+        topic: impl Into<String>,
+        layout: PointCloudLayout,
+    ) -> ChannelId {
         let mut channels = self.channels.write().unwrap();
         let id = ChannelId(channels.len() as u32);
 
@@ -38,6 +44,7 @@ impl ChannelRegistry {
             id,
             topic: topic.into(),
             layout,
+            instance_id: instance_id.into(),
         });
 
         id
@@ -76,8 +83,16 @@ impl Default for ChannelRegistry {
 fn registry_assigns_unique_channel_ids() {
     let registry = ChannelRegistry::new();
 
-    let front = registry.register("/lidar/front", PointCloudLayout::new(0, Vec::new()));
-    let rear = registry.register("/lidar/rear", PointCloudLayout::new(0, Vec::new()));
+    let front = registry.register(
+        "instance_1",
+        "/lidar/front",
+        PointCloudLayout::new(0, Vec::new()),
+    );
+    let rear = registry.register(
+        "instance_1",
+        "/lidar/rear",
+        PointCloudLayout::new(0, Vec::new()),
+    );
 
     assert_eq!(front.as_u32(), 0);
     assert_eq!(rear.as_u32(), 1);
@@ -90,7 +105,11 @@ fn cloned_registry_shares_registered_channels() {
     let registry = ChannelRegistry::new();
     let cloned_registry = registry.clone();
 
-    let channel_id = registry.register("/lidar/front", PointCloudLayout::new(0, Vec::new()));
+    let channel_id = registry.register(
+        "instance_1",
+        "/lidar/front",
+        PointCloudLayout::new(0, Vec::new()),
+    );
 
     let channel = cloned_registry
         .get(channel_id)

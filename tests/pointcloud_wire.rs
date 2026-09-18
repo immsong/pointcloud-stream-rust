@@ -16,10 +16,17 @@ async fn websocket_server_accepts_pointcloud_wire_subprotocol() {
 
     let server = WebsocketServer::new("127.0.0.1:0");
 
-    let front_channel =
-        server.register_channel("/lidar/front", PointCloudLayout::new(0, Vec::new()));
+    let front_channel = server.register_channel(
+        "instance_1",
+        "/lidar/front",
+        PointCloudLayout::new(0, Vec::new()),
+    );
 
-    let rear_channel = server.register_channel("/lidar/rear", PointCloudLayout::new(0, Vec::new()));
+    let rear_channel = server.register_channel(
+        "instance_2",
+        "/lidar/rear",
+        PointCloudLayout::new(0, Vec::new()),
+    );
 
     let running_server = server.clone();
 
@@ -63,9 +70,11 @@ async fn websocket_server_accepts_pointcloud_wire_subprotocol() {
 
             assert_eq!(channels[0]["id"], front_channel.as_u32());
             assert_eq!(channels[0]["topic"], "/lidar/front");
+            assert_eq!(channels[0]["instanceId"], "instance_1");
 
             assert_eq!(channels[1]["id"], rear_channel.as_u32());
             assert_eq!(channels[1]["topic"], "/lidar/rear");
+            assert_eq!(channels[1]["instanceId"], "instance_2");
         }
 
         _ => {
@@ -108,7 +117,7 @@ async fn websocket_server_handles_pointcloud_wire_subscription() {
         ],
     );
 
-    let pointcloud_channel = server.register_channel("/pointcloud", layout);
+    let pointcloud_channel = server.register_channel("instance_1", "/pointcloud", layout);
 
     let running_server = server.clone();
 
@@ -243,7 +252,7 @@ async fn websocket_server_publishes_pointcloud_wire_binary_message() {
 
     let layout = PointCloudLayout::new(12, fields.clone());
 
-    let pointcloud_channel = server.register_channel("/pointcloud", layout);
+    let pointcloud_channel = server.register_channel("instance_1", "/pointcloud", layout);
 
     let running_server = server.clone();
 

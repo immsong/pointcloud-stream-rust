@@ -33,7 +33,7 @@ async fn main() {
         ],
     };
 
-    let pointcloud_channel = server.register_channel("/pointcloud", layout);
+    let pointcloud_channel = server.register_channel("instance_1", "/pointcloud", layout);
 
     let running_server = server.clone();
 
