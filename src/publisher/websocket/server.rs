@@ -258,9 +258,13 @@ impl WebsocketServer {
                             }
                         }
                         Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
+                            let mut handled = false;
+
                             if let Ok(operation) = serde_json::from_str::<WireOperation>(&text) {
                                 match operation.op.as_str() {
                                     WIRE_OP_SUBSCRIBE => {
+                                        handled = true;
+
                                         if let Ok(subscribe) =
                                             serde_json::from_str::<WireSubscribe>(&text)
                                         {
@@ -312,6 +316,8 @@ impl WebsocketServer {
                                         }
                                     }
                                     WIRE_OP_UNSUBSCRIBE => {
+                                        handled = true;
+
                                         if let Ok(unsubscribe) =
                                             serde_json::from_str::<WireUnsubscribe>(&text)
                                         {
@@ -329,6 +335,17 @@ impl WebsocketServer {
                                     }
                                     _ => {}
                                 }
+                            }
+
+                            if !handled {
+                                let _ = event_tx
+                                    .send(WebsocketEvent::Message {
+                                        addr,
+                                        message: tokio_tungstenite::tungstenite::Message::Text(
+                                            text,
+                                        ),
+                                    })
+                                    .await;
                             }
                         }
                         _ => {
