@@ -45,10 +45,11 @@ impl WebsocketServer {
 
     pub fn register_channel(
         &self,
+        instance_id: impl Into<String>,
         topic: impl Into<String>,
         layout: PointCloudLayout,
     ) -> ChannelId {
-        self.channels.register(topic, layout)
+        self.channels.register(instance_id, topic, layout)
     }
 
     pub async fn run(

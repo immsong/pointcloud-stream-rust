@@ -7,6 +7,9 @@ pub const WIRE_OP_UNSUBSCRIBE: &str = "unsubscribe";
 pub struct ChannelInfo {
     pub id: u32,
     pub topic: String,
+
+    #[serde(rename = "instanceId")]
+    pub instance_id: String,
 }
 
 impl From<&crate::publisher::Channel> for ChannelInfo {
@@ -14,6 +17,7 @@ impl From<&crate::publisher::Channel> for ChannelInfo {
         Self {
             id: channel.id.as_u32(),
             topic: channel.topic.clone(),
+            instance_id: channel.instance_id.clone(),
         }
     }
 }
@@ -32,7 +36,7 @@ impl ChannelList {
         }
     }
 
-    pub fn from_channels(channels: &[crate::publisher::Channel]) -> Self {
+    pub fn from_channels(channels: &[Channel]) -> Self {
         let channels = channels.iter().map(ChannelInfo::from).collect();
 
         Self {
