@@ -1,4 +1,4 @@
-use crate::publisher::Channel;
+use crate::publisher::{Channel, ChannelKind};
 
 pub const WIRE_OP_SUBSCRIBE: &str = "subscribe";
 pub const WIRE_OP_UNSUBSCRIBE: &str = "unsubscribe";
@@ -7,6 +7,7 @@ pub const WIRE_OP_UNSUBSCRIBE: &str = "unsubscribe";
 pub struct ChannelInfo {
     pub id: u32,
     pub topic: String,
+    pub kind: &'static str,
 
     #[serde(rename = "instanceId")]
     pub instance_id: String,
@@ -17,6 +18,7 @@ impl From<&crate::publisher::Channel> for ChannelInfo {
         Self {
             id: channel.id.as_u32(),
             topic: channel.topic.clone(),
+            kind: channel.kind.as_str(),
             instance_id: channel.instance_id.clone(),
         }
     }
@@ -85,27 +87,35 @@ pub struct WireField {
 pub struct SubscribedChannel {
     pub id: u32,
     pub channel_id: u32,
-    pub point_stride: u32,
-    pub fields: Vec<WireField>,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub point_stride: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<WireField>>,
 }
 
 impl SubscribedChannel {
     pub fn from_channel(subscription_id: u32, channel: &Channel) -> Self {
-        let mut fields = Vec::new();
-
-        for field in &channel.layout.fields {
-            fields.push(WireField {
-                name: field.name.clone(),
-                offset: field.offset,
-                data_type: field.data_type as u8,
-                count: field.count,
-            });
-        }
-
+        let (point_stride, fields) = match &channel.kind {
+            ChannelKind::PointCloud(layout) => {
+                let fields = layout
+                    .fields
+                    .iter()
+                    .map(|field| WireField {
+                        name: field.name.clone(),
+                        offset: field.offset,
+                        data_type: field.data_type as u8,
+                        count: field.count,
+                    })
+                    .collect();
+                (Some(layout.point_step), Some(fields))
+            }
+        };
         Self {
             id: subscription_id,
             channel_id: channel.id.as_u32(),
-            point_stride: channel.layout.point_step,
+            kind: channel.kind.as_str(),
+            point_stride,
             fields,
         }
     }

@@ -1,4 +1,5 @@
 mod encoder;
+pub(crate) mod handler;
 mod message;
 
 pub use encoder::{encode_foxglove_pointcloud_message, encode_foxglove_pointcloud_payload};

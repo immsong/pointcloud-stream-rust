@@ -11,11 +11,25 @@ impl ChannelId {
     }
 }
 
+/// Payload carried by a registered topic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+    PointCloud(PointCloudLayout),
+}
+
+impl ChannelKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::PointCloud(_) => "pointcloud",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Channel {
     pub id: ChannelId,
     pub topic: String,
-    pub layout: PointCloudLayout,
+    pub kind: ChannelKind,
     pub instance_id: String,
 }
 
@@ -37,13 +51,22 @@ impl ChannelRegistry {
         topic: impl Into<String>,
         layout: PointCloudLayout,
     ) -> ChannelId {
+        self.register_kind(instance_id, topic, ChannelKind::PointCloud(layout))
+    }
+
+    fn register_kind(
+        &self,
+        instance_id: impl Into<String>,
+        topic: impl Into<String>,
+        kind: ChannelKind,
+    ) -> ChannelId {
         let mut channels = self.channels.write().unwrap();
         let id = ChannelId(channels.len() as u32);
 
         channels.push(Channel {
             id,
             topic: topic.into(),
-            layout,
+            kind,
             instance_id: instance_id.into(),
         });
 
