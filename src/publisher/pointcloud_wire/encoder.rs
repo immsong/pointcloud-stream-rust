@@ -5,15 +5,12 @@ pub fn encode_wire_pointcloud_message(
     timestamp_ns: u64,
     point_data: &[u8],
 ) -> Vec<u8> {
-    // 13 bytes for the header: 1 byte for operation, 4 bytes for subscription_id, 8 bytes for timestamp_ns
-    let mut message = Vec::with_capacity(13 + point_data.len());
-
-    message.push(WIRE_BINARY_OP_POINTCLOUD);
-    message.extend_from_slice(&subscription_id.to_le_bytes());
-    message.extend_from_slice(&timestamp_ns.to_le_bytes());
-    message.extend_from_slice(point_data);
-
-    message
+    encode_wire_message(
+        WIRE_BINARY_OP_POINTCLOUD,
+        subscription_id,
+        timestamp_ns,
+        point_data,
+    )
 }
 
 #[cfg(test)]
@@ -62,4 +59,18 @@ mod tests {
 
         assert_eq!(&message[13..], point_data.as_slice());
     }
+}
+
+fn encode_wire_message(
+    opcode: u8,
+    subscription_id: u32,
+    timestamp_ns: u64,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut message = Vec::with_capacity(13 + payload.len());
+    message.push(opcode);
+    message.extend_from_slice(&subscription_id.to_le_bytes());
+    message.extend_from_slice(&timestamp_ns.to_le_bytes());
+    message.extend_from_slice(payload);
+    message
 }

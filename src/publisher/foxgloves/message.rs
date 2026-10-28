@@ -55,7 +55,11 @@ impl Advertise {
     }
 
     pub fn from_channels(channels: &[crate::publisher::Channel]) -> Self {
-        let channels = channels.iter().map(AdvertisedChannel::from).collect();
+        let channels = channels
+            .iter()
+            .filter(|channel| super::handler::supports_channel(channel))
+            .map(AdvertisedChannel::from)
+            .collect();
 
         Self {
             op: "advertise",
