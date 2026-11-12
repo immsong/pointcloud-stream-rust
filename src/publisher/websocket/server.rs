@@ -3,14 +3,13 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 
-use crate::pointcloud::{PointCloudFrame, PointCloudLayout, pack_point_data};
-use crate::publisher::foxgloves::{self, FOXGLOVE_SUBPROTOCOL};
-use crate::publisher::pointcloud_wire::{self, POINTCLOUD_WIRE_SUBPROTOCOL};
-use crate::publisher::protocol::{self, PublishTarget, Subscriptions, TextAction};
+use crate::publisher::protocols::foxglove::{self, FOXGLOVE_SUBPROTOCOL};
+use crate::publisher::protocols::wire::{self, WIRE_SUBPROTOCOL};
+use crate::publisher::protocols::{self as protocol, PublishTarget, Subscriptions, TextAction};
 use crate::publisher::websocket::WebsocketEvent;
-use crate::publisher::{ChannelId, ChannelKind, ChannelRegistry};
+use crate::publisher::{ChannelId, ChannelRegistry, MessageCodec, PublishError};
 
-const SUPPORTED_SUBPROTOCOLS: &[&str] = &[FOXGLOVE_SUBPROTOCOL, POINTCLOUD_WIRE_SUBPROTOCOL];
+const SUPPORTED_SUBPROTOCOLS: &[&str] = &[FOXGLOVE_SUBPROTOCOL, WIRE_SUBPROTOCOL];
 
 #[derive(Debug)]
 struct ClientState {
@@ -23,7 +22,7 @@ struct ClientState {
 pub struct WebsocketServer {
     address: String,
     clients: Arc<tokio::sync::Mutex<HashMap<std::net::SocketAddr, ClientState>>>,
-    channels: ChannelRegistry,
+    pub(crate) channels: ChannelRegistry,
 }
 
 impl WebsocketServer {
@@ -35,13 +34,16 @@ impl WebsocketServer {
         }
     }
 
-    pub fn register_channel(
+    /// 내부 코덱을 사용하는 채널을 등록한다.
+    ///
+    /// 클라이언트에 채널 목록이 전달되도록 연결 전에 호출한다.
+    pub(crate) fn register_message_channel<C: MessageCodec>(
         &self,
         instance_id: impl Into<String>,
         topic: impl Into<String>,
-        layout: PointCloudLayout,
-    ) -> ChannelId {
-        self.channels.register(instance_id, topic, layout)
+        codec: C,
+    ) -> Result<ChannelId, PublishError> {
+        self.channels.register_message(instance_id, topic, codec)
     }
 
     pub async fn run(
@@ -77,7 +79,7 @@ impl WebsocketServer {
         event_tx: tokio::sync::mpsc::Sender<WebsocketEvent>,
         channels: ChannelRegistry,
     ) {
-        //  websocket handshake
+        // WebSocket handshake에서 사용할 하위 프로토콜을 선택한다.
         let mut client_subprotocol = None;
         let callback =
             |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -88,6 +90,14 @@ impl WebsocketServer {
                         tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
                         tokio_tungstenite::tungstenite::http::HeaderValue::from_static(subprotocol),
                     );
+                } else if request.headers().contains_key(
+                    tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+                ) {
+                    let mut error = tokio_tungstenite::tungstenite::http::Response::new(
+                        Some("Unsupported WebSocket subprotocol".to_string()),
+                    );
+                    *error.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::BAD_REQUEST;
+                    return Err(error);
                 }
                 Ok(response)
             };
@@ -273,7 +283,7 @@ impl WebsocketServer {
         channel_id: ChannelId,
     ) -> (Vec<PublishTarget>, Vec<PublishTarget>) {
         let clients = self.clients.lock().await;
-        let mut foxgloves_targets = vec![];
+        let mut foxglove_targets = vec![];
         let mut wire_targets = vec![];
 
         for client in clients.values() {
@@ -281,9 +291,9 @@ impl WebsocketServer {
                 if *subscribed_channel_id == channel_id {
                     match client.subprotocol {
                         Some(FOXGLOVE_SUBPROTOCOL) => {
-                            foxgloves_targets.push((client.tx.clone(), *subscription_id));
+                            foxglove_targets.push((client.tx.clone(), *subscription_id));
                         }
-                        Some(POINTCLOUD_WIRE_SUBPROTOCOL) => {
+                        Some(WIRE_SUBPROTOCOL) => {
                             wire_targets.push((client.tx.clone(), *subscription_id));
                         }
                         _ => {}
@@ -292,35 +302,50 @@ impl WebsocketServer {
             }
         }
 
-        (foxgloves_targets, wire_targets)
+        (foxglove_targets, wire_targets)
     }
 
-    pub async fn publish_pointcloud(
+    /// 등록된 코덱으로 메시지를 검증하고 구독자의 전송 큐로 전달한다.
+    ///
+    /// 구독자가 없어도 메시지 타입과 유효성을 검사한다.
+    /// 반환값은 수신 확인을 의미하지 않으며, 전송 큐가 닫힌 경우의 오류는 반환하지 않는다.
+    pub(crate) async fn publish_message<M: Send + Sync + 'static>(
         &self,
         channel_id: ChannelId,
-        frame: &PointCloudFrame,
-    ) -> Result<(), serde_json::Error> {
-        let channel = match self.channels.get(channel_id) {
-            Some(channel) => channel,
-            None => return Ok(()),
+        message: &M,
+    ) -> Result<(), PublishError> {
+        let channel = self
+            .channels
+            .get(channel_id)
+            .ok_or(PublishError::UnknownChannel(channel_id))?;
+
+        let actual = std::any::type_name::<M>();
+
+        channel.codec.validate(message, actual)?;
+        let timestamp_ns = channel.codec.timestamp_ns(message, actual)?;
+
+        let (foxglove_targets, wire_targets) = self.publish_targets(channel_id).await;
+
+        if foxglove_targets.is_empty() && wire_targets.is_empty() {
+            return Ok(());
+        }
+
+        let payload = channel.codec.encode(message, actual)?;
+
+        let foxglove_payload = if !foxglove_targets.is_empty() {
+            match &channel.foxglove {
+                Some(adapter) => Some(adapter.encode(message, &payload)?),
+                None => None,
+            }
+        } else {
+            None
         };
 
-        let ChannelKind::PointCloud(layout) = &channel.kind;
-        if frame.point_step != layout.point_step || frame.fields != layout.fields {
-            return Ok(());
+        if let Some(encoded) = foxglove_payload {
+            foxglove::handler::publish_payload(foxglove_targets, timestamp_ns, &encoded).await;
         }
 
-        let targets = self.publish_targets(channel_id).await;
-
-        if targets.0.is_empty() && targets.1.is_empty() {
-            return Ok(());
-        }
-
-        let point_data = pack_point_data(frame);
-
-        foxgloves::handler::publish_pointcloud(targets.0, frame, &point_data).await;
-        pointcloud_wire::handler::publish_pointcloud(targets.1, frame.timestamp_ns, &point_data)
-            .await;
+        wire::handler::publish_payload(wire_targets, timestamp_ns, &payload).await;
 
         Ok(())
     }

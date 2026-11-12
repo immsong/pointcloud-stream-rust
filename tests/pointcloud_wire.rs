@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use pointcloud_stream::pointcloud::{
     Endianness, PointCloudFrame, PointCloudLayout, PointField, PointFieldDataType,
 };
-use pointcloud_stream::publisher::pointcloud_wire::POINTCLOUD_WIRE_SUBPROTOCOL;
+use pointcloud_stream::publisher::protocols::wire::WIRE_SUBPROTOCOL;
 use pointcloud_stream::publisher::websocket::{WebsocketEvent, WebsocketServer};
 
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -41,7 +41,7 @@ async fn websocket_server_accepts_pointcloud_wire_subprotocol() {
 
     request.headers_mut().insert(
         tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
-        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(POINTCLOUD_WIRE_SUBPROTOCOL),
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(WIRE_SUBPROTOCOL),
     );
 
     let (mut websocket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
@@ -53,7 +53,7 @@ async fn websocket_server_accepts_pointcloud_wire_subprotocol() {
         .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
         .unwrap();
 
-    assert_eq!(subprotocol, POINTCLOUD_WIRE_SUBPROTOCOL);
+    assert_eq!(subprotocol, WIRE_SUBPROTOCOL);
 
     // Wire 연결 직후 서버가 전송하는 channel 목록을 확인한다.
     let received_message = websocket.next().await.unwrap().unwrap();
@@ -132,7 +132,7 @@ async fn websocket_server_handles_pointcloud_wire_subscription() {
 
     request.headers_mut().insert(
         tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
-        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(POINTCLOUD_WIRE_SUBPROTOCOL),
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(WIRE_SUBPROTOCOL),
     );
 
     let (mut websocket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
@@ -267,7 +267,7 @@ async fn websocket_server_publishes_pointcloud_wire_binary_message() {
 
     request.headers_mut().insert(
         tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
-        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(POINTCLOUD_WIRE_SUBPROTOCOL),
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(WIRE_SUBPROTOCOL),
     );
 
     let (mut websocket, _) = tokio_tungstenite::connect_async(request).await.unwrap();

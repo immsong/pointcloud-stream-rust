@@ -1,10 +1,15 @@
-//! Existing Wire behavior, isolated from WebSocket connection management.
-use super::*;
-use crate::publisher::protocol::{
+//! Wire 프로토콜의 채널 안내, 구독 및 메시지 전송.
+
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::publisher::protocols::wire::{
+    ChannelList, Subscribe, Subscribed, SubscribedChannel, Unsubscribe, WIRE_OP_SUBSCRIBE,
+    WIRE_OP_UNSUBSCRIBE, WireOperation, encode_wire_message,
+};
+use crate::publisher::protocols::{
     PublishTarget, Subscriptions, TextAction, json_message, send_payload,
 };
 use crate::publisher::{Channel, ChannelRegistry};
-use tokio_tungstenite::tungstenite::Message;
 
 pub(crate) fn initial_messages(channels: &[Channel]) -> Result<Vec<Message>, serde_json::Error> {
     Ok(vec![json_message(&ChannelList::from_channels(channels))?])
@@ -47,10 +52,11 @@ pub(crate) fn handle_text(
     Ok(TextAction::Forward)
 }
 
-pub(crate) async fn publish_pointcloud(
+/// 등록된 Wire 채널의 payload를 구독자에게 전송한다.
+pub(crate) async fn publish_payload(
     targets: Vec<PublishTarget>,
     timestamp_ns: u64,
-    data: &[u8],
+    payload: &[u8],
 ) {
-    send_payload(targets, timestamp_ns, data, encode_wire_pointcloud_message).await;
+    send_payload(targets, timestamp_ns, payload, encode_wire_message).await;
 }

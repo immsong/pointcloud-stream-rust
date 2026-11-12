@@ -1,21 +1,19 @@
-//! Foxglove compatibility boundary: PointCloud-only discovery, subscriptions and encoding.
+//! Foxglove 프로토콜의 Point Cloud 채널 안내, 구독 및 메시지 전송.
+
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::pointcloud::PointCloudFrame;
-use crate::publisher::foxgloves::encoder::{
-    encode_foxglove_pointcloud_message, encode_foxglove_pointcloud_payload,
-};
-use crate::publisher::foxgloves::message::{
+use crate::publisher::protocols::foxglove::encode_foxglove_pointcloud_message;
+use crate::publisher::protocols::foxglove::message::{
     Advertise, FOXGLOVE_OP_SUBSCRIBE, FOXGLOVE_OP_UNSUBSCRIBE, FoxgloveOperation, ServerInfo,
     Subscribe, Unsubscribe,
 };
-use crate::publisher::protocol::{
+use crate::publisher::protocols::{
     PublishTarget, Subscriptions, TextAction, json_message, send_payload,
 };
-use crate::publisher::{Channel, ChannelKind, ChannelRegistry};
+use crate::publisher::{Channel, ChannelRegistry};
 
 pub(super) fn supports_channel(channel: &Channel) -> bool {
-    matches!(&channel.kind, ChannelKind::PointCloud(_))
+    channel.foxglove.is_some()
 }
 
 pub(crate) fn initial_messages(channels: &[Channel]) -> Result<Vec<Message>, serde_json::Error> {
@@ -53,26 +51,21 @@ pub(crate) fn handle_text(
             _ => {}
         }
     }
-    // Preserve legacy Foxglove behavior: unknown/malformed text is ignored.
+
+    // 기존 Foxglove 동작에 맞춰 알 수 없거나 형식이 잘못된 메시지는 무시한다.
     Ok(TextAction::Handled(Vec::new()))
 }
 
-pub(crate) async fn publish_pointcloud(
+pub(crate) async fn publish_payload(
     targets: Vec<PublishTarget>,
-    frame: &PointCloudFrame,
-    point_data: &[u8],
+    timestamp_ns: u64,
+    payload: &[u8],
 ) {
-    if targets.is_empty() {
-        return;
-    }
-    // Preserve the existing public publish behavior on encoding failure.
-    if let Ok(payload) = encode_foxglove_pointcloud_payload(frame, point_data) {
-        send_payload(
-            targets,
-            frame.timestamp_ns,
-            &payload,
-            encode_foxglove_pointcloud_message,
-        )
-        .await;
-    }
+    send_payload(
+        targets,
+        timestamp_ns,
+        payload,
+        encode_foxglove_pointcloud_message,
+    )
+    .await;
 }
