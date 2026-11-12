@@ -1,3 +1,4 @@
+pub(crate) mod adapter;
 mod encoder;
 pub(crate) mod handler;
 mod message;

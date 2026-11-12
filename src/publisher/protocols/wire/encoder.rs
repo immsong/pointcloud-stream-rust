@@ -1,16 +1,14 @@
-pub const WIRE_BINARY_OP_POINTCLOUD: u8 = 0x01;
+pub const WIRE_BINARY_OP_MESSAGE_DATA: u8 = 0x01;
 
-pub fn encode_wire_pointcloud_message(
-    subscription_id: u32,
-    timestamp_ns: u64,
-    point_data: &[u8],
-) -> Vec<u8> {
-    encode_wire_message(
-        WIRE_BINARY_OP_POINTCLOUD,
-        subscription_id,
-        timestamp_ns,
-        point_data,
-    )
+pub fn encode_wire_message(subscription_id: u32, timestamp_ns: u64, payload: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(13 + payload.len());
+
+    message.push(WIRE_BINARY_OP_MESSAGE_DATA);
+    message.extend_from_slice(&subscription_id.to_le_bytes());
+    message.extend_from_slice(&timestamp_ns.to_le_bytes());
+    message.extend_from_slice(payload);
+
+    message
 }
 
 #[cfg(test)]
@@ -29,13 +27,13 @@ mod tests {
         ]
         .concat();
 
-        let message = encode_wire_pointcloud_message(subscription_id, timestamp_ns, &point_data);
+        let message = encode_wire_message(subscription_id, timestamp_ns, &point_data);
 
-        // 13-byte header + point data
+        // 13바이트 헤더와 point data의 전체 크기를 확인한다.
         assert_eq!(message.len(), 13 + point_data.len());
 
         // opcode
-        assert_eq!(message[0], WIRE_BINARY_OP_POINTCLOUD);
+        assert_eq!(message[0], WIRE_BINARY_OP_MESSAGE_DATA);
 
         // subscription_id
         let actual_subscription_id = u32::from_le_bytes(message[1..5].try_into().unwrap());
@@ -55,22 +53,8 @@ mod tests {
     fn pointcloud_message_preserves_point_data() {
         let point_data = vec![0, 1, 2, 3, 10, 20, 30, 40, 100, 200, 250];
 
-        let message = encode_wire_pointcloud_message(1, 1000, &point_data);
+        let message = encode_wire_message(1, 1000, &point_data);
 
         assert_eq!(&message[13..], point_data.as_slice());
     }
-}
-
-fn encode_wire_message(
-    opcode: u8,
-    subscription_id: u32,
-    timestamp_ns: u64,
-    payload: &[u8],
-) -> Vec<u8> {
-    let mut message = Vec::with_capacity(13 + payload.len());
-    message.push(opcode);
-    message.extend_from_slice(&subscription_id.to_le_bytes());
-    message.extend_from_slice(&timestamp_ns.to_le_bytes());
-    message.extend_from_slice(payload);
-    message
 }

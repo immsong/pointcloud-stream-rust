@@ -1,6 +1,11 @@
 use std::sync::{Arc, RwLock};
 
-use crate::pointcloud::PointCloudLayout;
+use serde_json::{Map, Value};
+
+use crate::publisher::codec::{CodecAdapter, ErasedCodec};
+use crate::publisher::protocols::foxglove::adapter::FoxgloveAdapter;
+use crate::publisher::protocols::wire::WireSchema;
+use crate::publisher::{MessageCodec, PublishError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelId(u32);
@@ -11,75 +16,90 @@ impl ChannelId {
     }
 }
 
-/// Payload carried by a registered topic.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChannelKind {
-    PointCloud(PointCloudLayout),
-}
-
-impl ChannelKind {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::PointCloud(_) => "pointcloud",
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct Channel {
     pub id: ChannelId,
     pub topic: String,
-    pub kind: ChannelKind,
     pub instance_id: String,
+    pub schema: WireSchema,
+    pub subscription_metadata: Map<String, Value>,
+    pub(crate) codec: Arc<dyn ErasedCodec>,
+    pub(crate) foxglove: Option<Arc<dyn FoxgloveAdapter>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ChannelRegistry {
     channels: Arc<RwLock<Vec<Channel>>>,
 }
 
 impl ChannelRegistry {
     pub fn new() -> Self {
-        Self {
-            channels: Arc::new(RwLock::new(Vec::new())),
+        Self::default()
+    }
+
+    pub(crate) fn register_message<C: MessageCodec>(
+        &self,
+        instance_id: impl Into<String>,
+        topic: impl Into<String>,
+        codec: C,
+    ) -> Result<ChannelId, PublishError> {
+        self.register_with_adapter(instance_id, topic, codec, None)
+    }
+
+    pub(crate) fn register_with_adapter<C: MessageCodec>(
+        &self,
+        instance_id: impl Into<String>,
+        topic: impl Into<String>,
+        codec: C,
+        foxglove: Option<Arc<dyn FoxgloveAdapter>>,
+    ) -> Result<ChannelId, PublishError> {
+        let schema = codec.schema();
+
+        if schema.schema_name.trim().is_empty()
+            || schema.encoding.trim().is_empty()
+            || schema.schema_version == 0
+        {
+            return Err(PublishError::InvalidSchema);
         }
-    }
 
-    pub fn register(
-        &self,
-        instance_id: impl Into<String>,
-        topic: impl Into<String>,
-        layout: PointCloudLayout,
-    ) -> ChannelId {
-        self.register_kind(instance_id, topic, ChannelKind::PointCloud(layout))
-    }
+        let metadata = codec.subscription_metadata();
 
-    fn register_kind(
-        &self,
-        instance_id: impl Into<String>,
-        topic: impl Into<String>,
-        kind: ChannelKind,
-    ) -> ChannelId {
+        // 구독 응답의 기본 필드가 코덱 메타데이터와 중복되지 않도록 한다.
+        for reserved in [
+            "id",
+            "channelId",
+            "schemaName",
+            "schemaVersion",
+            "encoding",
+            "topic",
+            "instanceId",
+            "op",
+        ] {
+            if metadata.contains_key(reserved) {
+                return Err(PublishError::ReservedMetadata(reserved));
+            }
+        }
+
         let mut channels = self.channels.write().unwrap();
-        let id = ChannelId(channels.len() as u32);
+        let id = ChannelId(
+            u32::try_from(channels.len()).map_err(|_| PublishError::LengthOverflow("channels"))?,
+        );
 
         channels.push(Channel {
             id,
             topic: topic.into(),
-            kind,
             instance_id: instance_id.into(),
+            schema,
+            subscription_metadata: metadata,
+            codec: Arc::new(CodecAdapter(codec)),
+            foxglove,
         });
 
-        id
+        Ok(id)
     }
 
     pub fn get(&self, id: ChannelId) -> Option<Channel> {
-        self.channels
-            .read()
-            .unwrap()
-            .iter()
-            .find(|channel| channel.id == id)
-            .cloned()
+        self.get_by_raw_id(id.as_u32())
     }
 
     pub fn channels(&self) -> Vec<Channel> {
@@ -87,20 +107,12 @@ impl ChannelRegistry {
     }
 
     pub fn get_by_raw_id(&self, id: u32) -> Option<Channel> {
-        self.channels
-            .read()
-            .unwrap()
-            .iter()
-            .find(|channel| channel.id.as_u32() == id)
-            .cloned()
+        self.channels.read().unwrap().get(id as usize).cloned()
     }
 }
 
-impl Default for ChannelRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[cfg(test)]
+use crate::pointcloud::PointCloudLayout;
 
 #[test]
 fn registry_assigns_unique_channel_ids() {

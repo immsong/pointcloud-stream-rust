@@ -1,8 +1,13 @@
-//! Protocol dispatch and shared transport types. No socket ownership here.
-use super::{Channel, ChannelId, ChannelRegistry};
-use super::{foxgloves, pointcloud_wire};
+//! WebSocket 하위 프로토콜별 메시지 처리와 공통 전송 타입.
+
+pub mod foxglove;
+pub mod wire;
+
 use std::collections::HashMap;
+
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::publisher::{Channel, ChannelId, ChannelRegistry};
 
 pub(crate) type Subscriptions = HashMap<u32, ChannelId>;
 pub(crate) type PublishTarget = (tokio::sync::mpsc::Sender<Message>, u32);
@@ -17,10 +22,8 @@ pub(crate) fn initial_messages(
     channels: &[Channel],
 ) -> Result<Vec<Message>, serde_json::Error> {
     match protocol {
-        Some(foxgloves::FOXGLOVE_SUBPROTOCOL) => foxgloves::handler::initial_messages(channels),
-        Some(pointcloud_wire::POINTCLOUD_WIRE_SUBPROTOCOL) => {
-            pointcloud_wire::handler::initial_messages(channels)
-        }
+        Some(foxglove::FOXGLOVE_SUBPROTOCOL) => foxglove::handler::initial_messages(channels),
+        Some(wire::WIRE_SUBPROTOCOL) => wire::handler::initial_messages(channels),
         _ => Ok(Vec::new()),
     }
 }
@@ -32,12 +35,10 @@ pub(crate) fn handle_text(
     subscriptions: &mut Subscriptions,
 ) -> Result<TextAction, serde_json::Error> {
     match protocol {
-        Some(foxgloves::FOXGLOVE_SUBPROTOCOL) => {
-            foxgloves::handler::handle_text(text, channels, subscriptions)
+        Some(foxglove::FOXGLOVE_SUBPROTOCOL) => {
+            foxglove::handler::handle_text(text, channels, subscriptions)
         }
-        Some(pointcloud_wire::POINTCLOUD_WIRE_SUBPROTOCOL) => {
-            pointcloud_wire::handler::handle_text(text, channels, subscriptions)
-        }
+        Some(wire::WIRE_SUBPROTOCOL) => wire::handler::handle_text(text, channels, subscriptions),
         _ => Ok(TextAction::Forward),
     }
 }
@@ -46,7 +47,7 @@ pub(crate) fn json_message(value: &impl serde::Serialize) -> Result<Message, ser
     Ok(Message::Text(serde_json::to_string(value)?.into()))
 }
 
-/// Shared queue delivery. Encoding is owned by the selected protocol handler.
+/// 프로토콜별 메시지 인코더를 사용해 구독자의 전송 큐로 payload를 전달한다.
 pub(crate) async fn send_payload(
     targets: Vec<PublishTarget>,
     timestamp_ns: u64,

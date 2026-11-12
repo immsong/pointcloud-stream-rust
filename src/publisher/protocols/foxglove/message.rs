@@ -1,3 +1,5 @@
+use crate::publisher::Channel;
+
 pub const FOXGLOVE_OP_SUBSCRIBE: &str = "subscribe";
 pub const FOXGLOVE_OP_UNSUBSCRIBE: &str = "unsubscribe";
 
@@ -28,15 +30,17 @@ pub struct AdvertisedChannel {
     pub schema: String,
 }
 
-impl From<&crate::publisher::Channel> for AdvertisedChannel {
-    fn from(channel: &crate::publisher::Channel) -> Self {
-        Self {
+impl AdvertisedChannel {
+    pub fn from_channel(channel: &Channel) -> Option<Self> {
+        let adapter = channel.foxglove.as_ref()?;
+
+        Some(Self {
             id: channel.id.as_u32(),
             topic: channel.topic.clone(),
-            encoding: "json".to_string(),
-            schema_name: "foxglove.PointCloud".to_string(),
-            schema: "".to_string(),
-        }
+            encoding: adapter.encoding().into(),
+            schema_name: adapter.schema_name().into(),
+            schema: adapter.schema().into(),
+        })
     }
 }
 
@@ -54,11 +58,10 @@ impl Advertise {
         }
     }
 
-    pub fn from_channels(channels: &[crate::publisher::Channel]) -> Self {
+    pub fn from_channels(channels: &[Channel]) -> Self {
         let channels = channels
             .iter()
-            .filter(|channel| super::handler::supports_channel(channel))
-            .map(AdvertisedChannel::from)
+            .filter_map(AdvertisedChannel::from_channel)
             .collect();
 
         Self {
